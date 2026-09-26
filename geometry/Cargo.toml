@@ -1,0 +1,12 @@
+[package]
+name = "openrdson-geometry"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "OpenRDSon 3D geometry construction (2D polygons -> tagged solids)"
+
+
+[dependencies]
+openrdson-core = { workspace = true }
+openrdson-layout-db = { path = "../layout-db" }
+openrdson-techfile = { path = "../techfile" }

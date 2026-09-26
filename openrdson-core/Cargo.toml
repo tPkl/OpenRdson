@@ -1,0 +1,8 @@
+[package]
+name = "openrdson-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Shared intermediate-representation types for the OpenRDSon pipeline"
+
+[dependencies]

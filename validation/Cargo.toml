@@ -1,0 +1,23 @@
+[package]
+name = "openrdson-validation"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "OpenRDSon aggregated acceptance validation"
+
+
+[dependencies]
+openrdson-core = { workspace = true }
+openrdson-layout-db = { path = "../layout-db" }
+openrdson-techfile = { path = "../techfile" }
+openrdson-device-recognition = { path = "../device-recognition" }
+openrdson-device-recognition-verify = { path = "../device-recognition-verify" }
+openrdson-geometry = { path = "../geometry" }
+openrdson-meshing = { path = "../meshing" }
+openrdson-solver = { path = "../solver" }
+openrdson-netlist = { path = "../netlist" }
+openrdson-extraction = { path = "../extraction" }
+openrdson-channel = { path = "../channel" }
+
+[features]
+faer-sheet = ["openrdson-extraction/faer-sheet"]

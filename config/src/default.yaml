@@ -1,0 +1,172 @@
+# =============================================================================
+# OpenRDSon solver configuration
+# =============================================================================
+# Run the tool by pointing it at this file:
+#
+#     openrdson --config openrdson.yaml <command>
+#
+# <command> is optional and defaults to `all`. Commands:
+#     all        Rdson solve + table + viz export
+#     sheet-rds  full-array sheet extraction (Rds vs Vgs)
+#     device-rds device-local 3D FEM extraction
+#     mode-a     Mode-A (access-resistance) extraction
+#     netlist    SPICE/SPEF export
+#     viz        write the visualization database (GDS/KLayout + VTU/ParaView)
+#
+# Relative paths are resolved against the current working directory. Any key
+# may be omitted; omitted keys keep the default shown here.
+# =============================================================================
+
+
+# -----------------------------------------------------------------------------
+# Input files and output location
+# -----------------------------------------------------------------------------
+project:
+  # Directory holding the CCI database: layout, layer map, ports, devtab, spi.
+  cci_dir: ""
+
+  # File names inside `cci_dir`.
+  layout: ""                       # layout database (AGF or GDSII)
+  gds_map: ""                      # GDS layer number -> logical layer name
+  ports: ""                        # terminal/port definitions
+  devtab: ""                       # device templates (seed/prop layers)
+  spi: ""                          # golden LVS netlist (device params + weff)
+
+  # Technology / extraction inputs (relative to the working directory).
+  tech_ict: ""
+  layer_map: ""
+  model_csv: ""
+
+  # Where the visualization database is written.
+  output_dir: openrdson_viz
+
+
+# -----------------------------------------------------------------------------
+# Units
+# -----------------------------------------------------------------------------
+units:
+  # Database unit in nanometres. `auto` (recommended) infers the true unit by
+  # cross-referencing the golden SPI finger width against the recognized seed
+  # footprint -- this corrects malformed GDS `UNITS` records. Set a number to
+  # force a specific unit (e.g. 1).
+  db_unit_nm: auto
+
+
+# -----------------------------------------------------------------------------
+# Meshing / discretization
+# -----------------------------------------------------------------------------
+meshing:
+  # Full-array 2D sheet cell size (um). Smaller = more accurate, slower.
+  # Tune with the die size: ~die_width/25 is a reasonable starting point.
+  sheet_cell_um: 2.0
+
+  # Max cells per rectangle dimension (performance cap).
+  sheet_cap: 30
+
+  # Radius within which same-net vias are grouped into one equivalent via (um).
+  # 0 disables grouping.
+  via_group_radius_um: 0.5
+
+  # Device-local 3D FEM mesh cell sizes (um).
+  device_lateral_um: 1.0
+  device_z_um: 0.5
+
+  # Optional per-physical-layer sheet cell overrides (um). Uncomment to refine a
+  # specific layer, e.g. a thin high-resistance poly layer.
+  per_layer_cell_um: {}
+
+  # --- Adaptive (quadtree) 2.5D sheet refinement ---------------------------
+  # Enable the refine -> solve loop driven by a per-cell error indicator.
+  adaptive: false
+  # Relative indicator convergence tolerance.
+  adaptive_tol: 1.0e-3
+  # Maximum quadtree refinement level (base cell / 2^level).
+  adaptive_max_level: 3
+  # Node budget; refinement stops above it.
+  adaptive_max_nodes: 400000
+  # Doerfler marking fraction (0..1): refine the top cells carrying this share
+  # of the total indicator.
+  adaptive_mark_frac: 0.5
+  # Maximum refine -> solve iterations.
+  adaptive_iters: 8
+  # A-priori refinement radius around vias/terminals (um); 0 disables.
+  refine_near_vias_um: 0.0
+  # per_layer_cell_um:
+  #   Poly1: 0.5
+  #   Metal1: 1.0
+
+
+# -----------------------------------------------------------------------------
+# Voltage terminals
+# -----------------------------------------------------------------------------
+# Every ports-file entry must have at least one terminal here (hard error if
+# not). Extra "special node" terminals -- names that are not top ports -- are
+# allowed, e.g. to tie a floating node to ground. All voltages are absolute
+# (any terminal, or none, may be 0 V). A net may have several contacts (e.g.
+# multiple bondwires): repeat the same `name` at different positions.
+#
+# Each terminal ties every mesh node inside the dx_um x dy_um rectangle, on the
+# terminal's net, to `voltage`. dx_um/dy_um emulate a bondwire/pad footprint;
+# set them to 0 to bind only the single nearest node. If x_um/y_um are omitted
+# (0), the matching port's own location is used.
+#
+# `layer` is an optional contact level: a physical ICT name (Metal2, Metal3, ...)
+# or a logical gds.map name; it defaults to the port's layer.
+terminals: []
+
+
+# -----------------------------------------------------------------------------
+# Bias point and solve controls
+# -----------------------------------------------------------------------------
+solver:
+  temperature_c: 27.0      # device temperature
+
+  # Re-solve each device's channel at its own IR-dropped Vds, so devices near
+  # the source differ from those at the far end.
+  local_bias: true
+
+  # Relative convergence tolerance and iteration cap for the local-bias loop.
+  tolerance: 1.0e-3
+  max_iterations: 20
+
+  # What to do when an active device has no channel model available:
+  #   error = abort (default)   open = bind it to a very large resistance
+  missing_model: error
+
+
+# -----------------------------------------------------------------------------
+# Resource controls
+# -----------------------------------------------------------------------------
+performance:
+  # Worker threads. 0 = use all available cores.
+  # NOTE: the current solver is single-threaded; this is accepted and logged,
+  # and reserved for the parallelized solver.
+  threads: 0
+
+  # Soft memory cap in MB (0 = unlimited). Reserved / advisory.
+  max_memory_mb: 0
+
+
+# -----------------------------------------------------------------------------
+# Logging
+# -----------------------------------------------------------------------------
+logging:
+  # error | warn | info | debug | trace
+  level: info
+
+
+# -----------------------------------------------------------------------------
+# Visualization database
+# -----------------------------------------------------------------------------
+visualization:
+  enabled: true
+
+  # Vertical exaggeration for the 2.5D stack. The die is ~1000x wider than it is
+  # tall, so layers are invisible at true scale; 20-50 is a good range.
+  z_scale: 25.0
+
+  # Colormap bins per layer for the KLayout GDS maps.
+  bins: 32
+
+  # Output database unit (nm) for the GDS maps. `auto` = the layout's own unit.
+  out_db_unit_nm: auto

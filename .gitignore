@@ -1,0 +1,9 @@
+# Rust build output
+/target
+
+# Extraction output / field cache
+openrdson_viz/
+
+# Editor / personal notes state (not part of the project)
+.obsidian/
+.trash/

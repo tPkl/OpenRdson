@@ -1,0 +1,6 @@
+[package]
+name = "openrdson-config"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "OpenRDSon solver configuration: documented YAML schema + loader"

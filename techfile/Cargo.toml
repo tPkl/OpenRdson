@@ -1,0 +1,11 @@
+[package]
+name = "openrdson-techfile"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "OpenRDSon process technology: ICT stack + logical/physical layer map"
+
+
+[dependencies]
+openrdson-core = { workspace = true }
+openrdson-io = { workspace = true }

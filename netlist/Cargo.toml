@@ -1,0 +1,10 @@
+[package]
+name = "openrdson-netlist"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "OpenRDSon netlist & parasitic IO (SPICE, SPEF)"
+
+[dependencies]
+openrdson-core = { workspace = true }
+openrdson-extraction = { path = "../extraction" }

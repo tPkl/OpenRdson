@@ -1,0 +1,29 @@
+[package]
+name = "openrdson-orchestration"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "OpenRDSon pipeline driver / CLI"
+
+[[bin]]
+name = "openrdson"
+path = "src/main.rs"
+
+[dependencies]
+openrdson-core = { workspace = true }
+openrdson-io = { workspace = true }
+openrdson-config = { path = "../config" }
+openrdson-layout-db = { path = "../layout-db" }
+openrdson-techfile = { path = "../techfile" }
+openrdson-device-recognition = { path = "../device-recognition" }
+openrdson-device-recognition-verify = { path = "../device-recognition-verify" }
+openrdson-geometry = { path = "../geometry" }
+openrdson-meshing = { path = "../meshing" }
+openrdson-solver = { path = "../solver" }
+openrdson-extraction = { path = "../extraction" }
+openrdson-channel = { path = "../channel" }
+openrdson-netlist = { path = "../netlist" }
+openrdson-validation = { path = "../validation" }
+
+[features]
+faer-sheet = ["openrdson-validation/faer-sheet"]

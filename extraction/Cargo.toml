@@ -1,0 +1,18 @@
+[package]
+name = "openrdson-extraction"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "OpenRDSon resistive network extraction and terminal reduction"
+
+[dependencies]
+openrdson-core = { workspace = true }
+openrdson-solver = { path = "../solver" }
+
+[dev-dependencies]
+openrdson-geometry = { path = "../geometry" }
+openrdson-meshing = { path = "../meshing" }
+
+[features]
+# Use faer's sparse Cholesky for the 2D sheet-network solves.
+faer-sheet = ["openrdson-solver/faer-sheet"]

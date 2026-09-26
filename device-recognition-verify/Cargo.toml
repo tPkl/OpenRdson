@@ -1,0 +1,12 @@
+[package]
+name = "openrdson-device-recognition-verify"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Independent verification of OpenRDSon device recognition"
+
+
+[dependencies]
+openrdson-core = { workspace = true }
+openrdson-layout-db = { path = "../layout-db" }
+openrdson-device-recognition = { path = "../device-recognition" }

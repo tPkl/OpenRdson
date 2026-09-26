@@ -1,0 +1,29 @@
+[workspace]
+resolver = "2"
+members = [
+    "openrdson-core",
+    "openrdson-io",
+    "config",
+    "layout-db",
+    "techfile",
+    "device-recognition",
+    "device-recognition-verify",
+    "geometry",
+    "meshing",
+    "solver",
+    "extraction",
+    "channel",
+    "netlist",
+    "orchestration",
+    "validation",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/tPkl/OpenRdson"
+
+[workspace.dependencies]
+openrdson-core = { path = "openrdson-core" }
+openrdson-io = { path = "openrdson-io" }

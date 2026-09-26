@@ -1,0 +1,11 @@
+[package]
+name = "openrdson-layout-db"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "OpenRDSon layout database ingestion: AGF/GDSII + gds.map + devtab + ports"
+
+
+[dependencies]
+openrdson-core = { workspace = true }
+openrdson-io = { workspace = true }

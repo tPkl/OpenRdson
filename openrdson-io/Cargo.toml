@@ -1,0 +1,9 @@
+[package]
+name = "openrdson-io"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "File-format readers for the OpenRDSon pipeline (GDSII/AGF, gds.map, ICT)"
+
+[dependencies]
+openrdson-core = { workspace = true }

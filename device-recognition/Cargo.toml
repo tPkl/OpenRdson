@@ -1,0 +1,11 @@
+[package]
+name = "openrdson-device-recognition"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "OpenRDSon generic device recognition from layout + seed/prop layers"
+
+
+[dependencies]
+openrdson-core = { workspace = true }
+openrdson-layout-db = { path = "../layout-db" }
