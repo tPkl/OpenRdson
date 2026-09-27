@@ -17,8 +17,7 @@ builds a **2.5D sheet-resistance network**: each conducting layer becomes a 2D
 resistor mesh, vias/contacts become lumped resistors, and each device becomes a
 bias-dependent channel resistor. The network is solved across the full die and
 the resulting drain–source resistance — plus a per-layer breakdown — is
-reported. A device-local 3D FEM path is also available for higher-fidelity
-access-resistance analysis.
+reported.
 
 ---
 # Gallery
@@ -40,8 +39,7 @@ Example Database of a 100-finger LDMOS FET from personal verification & developm
 - **Full-die 2.5D sheet extraction** — scales to the whole die where 3D FEM cannot.
 - **Device recognition** — matches layout devices to the golden schematic netlist
   (template-driven, orientation-aware).
-- **Bias-dependent channel model** — tabulated `Id(T, Vgs, Vds)` lookup, plus
-  optional ngspice co-simulation if using BSIM device models.
+- **Bias-dependent channel model** — tabulated `Id(T, Vgs, Vds)` lookup.
 - **Adaptive quadtree meshing** — error-indicator-driven refine→solve loop, with
   warm-started linear and local-bias solves.
 - **Finite-volume weighting** — node-centred control volumes for accurate sheet
@@ -52,7 +50,6 @@ Example Database of a 100-finger LDMOS FET from personal verification & developm
   visualization (or keeping multiple accuracy levels) does not re-solve.
 - **Visualization** — KLayout GDS colormaps and ParaView VTU output (potential,
   current density, power, current, resistance, per-layer stacks).
-- **Netlist export** — SPICE and SPEF.
 - **Clear, section-tagged logging** with a CCI import summary (devices, nets,
   W/L).
 
@@ -62,9 +59,6 @@ Example Database of a 100-finger LDMOS FET from personal verification & developm
 |---------------|-------------|
 | `sheet-rds`   | Full-array 2.5D sheet extraction; prints the Rds(Vgs) table |
 | `viz`         | Export the solved field to KLayout / ParaView (cached; re-solves only when stale) |
-| `device-rds`  | Device-local 3D FEM extraction |
-| `mode-a`      | Mode-A (access-resistance) extraction |
-| `netlist`     | SPICE / SPEF export |
 | `all`         | Solve Rdson, print the table, and export the visualization |
 
 Run `openrdson --help` for the full flag list.
@@ -73,7 +67,7 @@ Run `openrdson --help` for the full flag list.
 ## Installation
 
 ```sh
-git clone <REPOSITORY_URL>        # placeholder — replace with the real URL
+git clone https://github.com/tPkl/OpenRdson.git
 cd openrdson
 cargo build --release
 ```
@@ -95,8 +89,6 @@ solver dependency**.
 
 - **Rust (2024+)** and a recent Cargo toolchain.
 - **faer** — optional, sparse direct solver (`faer-sheet` feature).
-- **ngspice** — optional, an external `ngspice` binary used only for Mode A
-  channel co-simulation.
 
 Everything else — YAML config, logging, the linear solver, and the VTU/GDS
 writers — is implemented in-tree.
@@ -152,7 +144,6 @@ axis names: temperature,Vgs,Vds,Id
 - Current-density and power-density visualization across the full die.
 - Verification that a layout's device population matches the golden schematic
   netlist.
-- Access-resistance (Mode A) analysis of a single device.
 
 ## Hardware recommendations
 
@@ -176,7 +167,6 @@ Below are some planned improvements to make the project more polished and optimi
 
 * User choice between quad-meshes and tri-meshes
 * Thermal-extraction co-simulation: First-pass power extraction -> Import power field into thermal solver -> Import back into power extraction -> Iterate until below error threshold
-* Better ngspice support
 * Subfinger splitting: Split large-W fingers into effective "subdevices" for better table model accuracy
 * Comprehensive QRC-Like SPICE export: Resistor mesh export with spice or Spectre support
 * Readthedocs: Better documentation of all classes and functions.
@@ -196,7 +186,7 @@ Licensed under MIT license.
 | `orchestration` | CLI driver and visualization export |
 | `extraction` | 2.5D sheet-resistance network + adaptive meshing |
 | `validation` | sheet/device extraction orchestration and field cache |
-| `channel` | channel model (lookup table + ngspice) |
+| `channel` | channel model (Id lookup table) |
 | `device-recognition` | layout→schematic device recognition |
 | `device-recognition-verify` | recognition verification against the golden netlist |
 | `layout-db` | layout ingestion and connectivity extraction |
@@ -204,7 +194,6 @@ Licensed under MIT license.
 | `geometry` | 3D solid stack assembly |
 | `meshing` | hexahedral mesh generation |
 | `solver` | sparse solvers (IC(0)-PCG, optional faer Cholesky) |
-| `netlist` | SPICE / SPEF writers |
 | `config` | YAML configuration |
 | `openrdson-core` | shared geometry / device IR and logging |
 | `openrdson-io` | GDSII / VTU writers |

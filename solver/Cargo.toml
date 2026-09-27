@@ -15,8 +15,7 @@ faer = { version = "0.24", default-features = false, features = ["std", "sparse"
 [features]
 bench-faer = ["dep:faer"]
 # Use faer's sparse Cholesky for the 2D sheet-network solves (see
-# `solve_dirichlet_direct`). The 3D FEM keeps the in-house IC(0)-PCG, which is
-# faster there. Off by default to keep the tool dependency-free.
+# `solve_dirichlet_direct`). Off by default to keep the tool dependency-free.
 faer-sheet = ["dep:faer"]
 
 [dev-dependencies]

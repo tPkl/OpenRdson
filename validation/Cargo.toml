@@ -15,7 +15,6 @@ openrdson-device-recognition-verify = { path = "../device-recognition-verify" }
 openrdson-geometry = { path = "../geometry" }
 openrdson-meshing = { path = "../meshing" }
 openrdson-solver = { path = "../solver" }
-openrdson-netlist = { path = "../netlist" }
 openrdson-extraction = { path = "../extraction" }
 openrdson-channel = { path = "../channel" }
 

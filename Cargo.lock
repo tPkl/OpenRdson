@@ -439,15 +439,6 @@ checksum = "9f7c3e4beb33f85d45ae3e3a1792185706c8e16d043238c593331cc7cd313b50"
 [[package]]
 name = "openrdson-channel"
 version = "0.1.0"
-dependencies = [
- "openrdson-core",
- "openrdson-device-recognition",
- "openrdson-extraction",
- "openrdson-geometry",
- "openrdson-layout-db",
- "openrdson-meshing",
- "openrdson-solver",
-]
 
 [[package]]
 name = "openrdson-config"
@@ -519,28 +510,17 @@ dependencies = [
 ]
 
 [[package]]
-name = "openrdson-netlist"
-version = "0.1.0"
-dependencies = [
- "openrdson-core",
- "openrdson-extraction",
-]
-
-[[package]]
 name = "openrdson-orchestration"
 version = "0.1.0"
 dependencies = [
  "openrdson-channel",
  "openrdson-config",
  "openrdson-core",
- "openrdson-device-recognition",
- "openrdson-device-recognition-verify",
  "openrdson-extraction",
  "openrdson-geometry",
  "openrdson-io",
  "openrdson-layout-db",
  "openrdson-meshing",
- "openrdson-netlist",
  "openrdson-solver",
  "openrdson-techfile",
  "openrdson-validation",
@@ -576,7 +556,6 @@ dependencies = [
  "openrdson-geometry",
  "openrdson-layout-db",
  "openrdson-meshing",
- "openrdson-netlist",
  "openrdson-solver",
  "openrdson-techfile",
 ]

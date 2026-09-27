@@ -67,8 +67,6 @@ pub struct Meshing {
     pub sheet_cell_um: f64,
     pub sheet_cap: usize,
     pub via_group_radius_um: f64,
-    pub device_lateral_um: f64,
-    pub device_z_um: f64,
     /// Per-physical-layer sheet cell overrides (µm).
     pub per_layer_cell_um: BTreeMap<String, f64>,
     /// Adaptive (quadtree) sheet refinement.
@@ -93,8 +91,6 @@ impl Default for Meshing {
             sheet_cell_um: 2.0,
             sheet_cap: 30,
             via_group_radius_um: 5.0,
-            device_lateral_um: 1.0,
-            device_z_um: 0.5,
             per_layer_cell_um: BTreeMap::new(),
             adaptive: false,
             adaptive_tol: 1e-3,
@@ -296,9 +292,6 @@ impl SolverConfig {
             c.meshing.sheet_cap = usize_of(m.get("sheet_cap"), c.meshing.sheet_cap);
             c.meshing.via_group_radius_um =
                 f64_of(m.get("via_group_radius_um"), c.meshing.via_group_radius_um);
-            c.meshing.device_lateral_um =
-                f64_of(m.get("device_lateral_um"), c.meshing.device_lateral_um);
-            c.meshing.device_z_um = f64_of(m.get("device_z_um"), c.meshing.device_z_um);
             c.meshing.adaptive = bool_of(m.get("adaptive"), c.meshing.adaptive);
             c.meshing.adaptive_tol = f64_of(m.get("adaptive_tol"), c.meshing.adaptive_tol);
             c.meshing.adaptive_max_level = usize_of(

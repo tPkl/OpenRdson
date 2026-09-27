@@ -85,20 +85,6 @@ pub struct DeviceInstance {
     pub confidence: f64,
 }
 
-/// A bias-dependent channel element produced by `channel`.
-///
-/// `r_channel` is the equivalent channel+drift resistance at the given bias and
-/// temperature; `I(V)` and its derivative are what the solver's external
-/// nonlinear-element interface consumes.
-#[derive(Debug, Clone, PartialEq)]
-pub struct ChannelElement {
-    pub device_ref: String,
-    pub temperature: f64,
-    pub vgs: f64,
-    pub vds: f64,
-    pub r_channel: f64,
-}
-
 /// One instance line parsed from a golden LVS SPICE netlist.
 #[derive(Debug, Clone, PartialEq)]
 pub struct SpiInstance {

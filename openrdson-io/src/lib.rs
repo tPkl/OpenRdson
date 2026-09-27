@@ -18,4 +18,4 @@ pub use viz::{
     write_colormap, write_gds_file, write_grouped_colormap, write_lyp, write_named_lyp,
     GdsBoundary, VizItem,
 };
-pub use vtu::{cell_current_density, cell_power_current, write_vtu, VtkCellType, VtuMesh};
+pub use vtu::{write_vtu, VtkCellType, VtuMesh};

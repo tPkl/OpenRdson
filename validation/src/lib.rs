@@ -7,7 +7,7 @@ use openrdson_channel::ModelTable;
 use openrdson_core::geometry::{Point, SolidModel};
 use openrdson_device_recognition::{recognize, RecognitionConfig};
 use openrdson_extraction::two_terminal_resistance;
-use openrdson_geometry::{assemble_stack, extrude_polygon};
+use openrdson_geometry::extrude_polygon;
 use openrdson_layout_db::{load_layout_ir, read_devtab_file, read_spi_instances};
 use openrdson_meshing::{mesh_model, weld_nodes, MeshConfig};
 use openrdson_techfile::{load_tech_stack, read_sft_cci_map};
@@ -60,6 +60,24 @@ impl ProjectPaths {
     pub fn pin_xy_path(&self) -> PathBuf {
         self.cci_dir.join(&self.pin_xy)
     }
+
+    /// Every input file the extraction reads, in a stable order. Used to key
+    /// the field cache so a changed database (or a regenerated `model.csv`)
+    /// invalidates a cached solve.
+    pub fn input_files(&self) -> Vec<PathBuf> {
+        vec![
+            self.layout_path(),
+            self.gds_map_path(),
+            self.ports_path(),
+            self.devtab_path(),
+            self.spi_path(),
+            self.net_names_path(),
+            self.pin_xy_path(),
+            self.tech_ict.clone(),
+            self.layer_map.clone(),
+            self.model_csv.clone(),
+        ]
+    }
 }
 
 /// A user-defined voltage terminal (config input).
@@ -103,9 +121,6 @@ pub struct MeshSettings {
     pub sheet_cap: usize,
     /// Radius within which same-net vias are grouped (m); 0 disables grouping.
     pub via_group_radius_m: f64,
-    /// Device-local 3D mesh cell sizes (m).
-    pub device_lateral_m: f64,
-    pub device_z_m: f64,
     /// Per-physical-layer sheet cell overrides (m).
     pub per_layer_cell_m: std::collections::BTreeMap<String, f64>,
     /// Explicit database-unit override (nm). The AGF `UNITS` record can be
@@ -131,8 +146,6 @@ impl Default for MeshSettings {
             sheet_cell_m: 2e-6,
             sheet_cap: 30,
             via_group_radius_m: 0.5e-6,
-            device_lateral_m: 1e-6,
-            device_z_m: 0.5e-6,
             per_layer_cell_m: std::collections::BTreeMap::new(),
             db_unit_nm: None,
             paths: ProjectPaths::default(),
@@ -271,36 +284,6 @@ pub fn load_layout(
         .map_err(|e| e.to_string())?;
     correct_db_unit(&mut layout, settings);
     Ok(layout)
-}
-
-/// Per-material conductivity from the ICT stack: `σ = 1/(R_sheet · thickness)`
-/// for conductors/diffusions; a nominal high value for vias.
-fn sigma_table(model: &openrdson_core::geometry::SolidModel, stack: &openrdson_core::tech::TechStack) -> Vec<f64> {
-    let mut sigma = vec![0.0f64; model.material_names.len() + 1];
-    for (i, name) in model.material_names.iter().enumerate() {
-        let id = i + 1;
-        let s = if let Some(c) = stack.conductor(name) {
-            let rho = c.resistivity.first().copied().unwrap_or(1.0);
-            let t = c.thickness.unwrap_or(1e-6);
-            if rho > 0.0 && t > 0.0 {
-                1.0 / (rho * t)
-            } else {
-                0.0
-            }
-        } else if let Some(d) = stack.diffusion(name) {
-            let rho = d.resistivity.first().copied().unwrap_or(1.0);
-            let t = d.thickness.unwrap_or(1e-6);
-            if rho > 0.0 && t > 0.0 {
-                1.0 / (rho * t)
-            } else {
-                0.0
-            }
-        } else {
-            1e7 // via
-        };
-        sigma[id] = s;
-    }
-    sigma
 }
 
 /// A device channel with its drain/source/gate nodes, connectivity components
@@ -1553,15 +1536,30 @@ impl SheetFullArray {
         r0: Option<&[f64]>,
         u0: Option<&[f64]>,
     ) -> Result<(Vec<f64>, Vec<ChannelState>), String> {
+        self.solve_local_bias_terms(&self.terminals, temperature, tol, max_iter, r0, u0)
+    }
+
+    /// [`Self::solve_local_bias_warm`] with an explicit terminal set: the mesh
+    /// and channels are unchanged, only the Dirichlet bias comes from
+    /// `terminals`. Used by the Vgs sweep to re-solve at a shifted gate bias
+    /// without rebuilding the network.
+    fn solve_local_bias_terms(
+        &self,
+        terminals: &[ResolvedTerminal],
+        temperature: f64,
+        tol: f64,
+        max_iter: usize,
+        r0: Option<&[f64]>,
+        u0: Option<&[f64]>,
+    ) -> Result<(Vec<f64>, Vec<ChannelState>), String> {
         // Dirichlet nodes from every terminal.
-        let fixed: Vec<(u32, f64)> = self
-            .terminals
+        let fixed: Vec<(u32, f64)> = terminals
             .iter()
             .flat_map(|t| t.nodes.iter().map(move |&n| (n, t.voltage)))
             .collect();
         // Applied component potentials, for the initial guess.
         let mut comp_v: std::collections::BTreeMap<usize, f64> = std::collections::BTreeMap::new();
-        for t in &self.terminals {
+        for t in terminals {
             for &n in &t.nodes {
                 comp_v.insert(self.net.component[n as usize], t.voltage);
             }
@@ -1646,7 +1644,7 @@ impl SheetFullArray {
                 }
             })
             .collect();
-        for t in &self.terminals {
+        for t in terminals {
             let comp = self.net.component[t.nodes[0] as usize];
             let (mut lo, mut hi) = (f64::INFINITY, f64::NEG_INFINITY);
             let mut cn = 0usize;
@@ -2063,6 +2061,30 @@ impl SheetFullArray {
     /// `ΔV / I`, with `I` the total current entering the drain.
     pub fn rds(&self, temperature: f64) -> Result<f64, String> {
         let (u, channels) = self.solve_local_bias(temperature, 1e-3, 20)?;
+        self.rds_from_solution(&u, &channels)
+    }
+
+    /// Drain–source resistance at gate-source voltage `vgs`, reusing the current
+    /// mesh and channel set: only the gate terminal's voltage is moved, so this
+    /// is far cheaper than rebuilding the network (used by the Vgs sweep).
+    pub fn rds_at_vgs(&self, vgs: f64, temperature: f64) -> Result<f64, String> {
+        let vs = self
+            .named_terminal("s")
+            .map(|(v, _)| v)
+            .ok_or_else(|| "need a source terminal for rds_at_vgs".to_string())?;
+        let mut terms = self.terminals.clone();
+        for t in &mut terms {
+            if t.name.eq_ignore_ascii_case("g") {
+                t.voltage = vs + vgs;
+            }
+        }
+        let (u, channels) =
+            self.solve_local_bias_terms(&terms, temperature, 1e-3, 20, None, None)?;
+        self.rds_from_solution(&u, &channels)
+    }
+
+    /// `ΔV / I` from an already-solved potential field and channel set.
+    fn rds_from_solution(&self, u: &[f64], channels: &[ChannelState]) -> Result<f64, String> {
         let extra: Vec<(u32, u32, f64)> = channels
             .iter()
             .filter(|c| c.conductance > 0.0)
@@ -2083,290 +2105,6 @@ impl SheetFullArray {
             return Ok(f64::INFINITY);
         }
         Ok(dv / i_total.abs())
-    }
-}
-
-/// Device-local channel-coupled Rds extraction.
-///
-/// The whole die cannot be meshed on a uniform fine grid (0.16 µm fingers across
-/// a 362×1075 µm die), so extraction runs on a fine **local** grid around one
-/// recognized device. Global connectivity supplies the D/S/G net identity; the
-/// channel is injected as a bias-dependent resistor between the nearest drain
-/// and source nodes of that device.
-pub struct DeviceExtraction {
-    mesh: openrdson_core::mesh::Mesh,
-    node_component: Vec<Option<usize>>,
-    d_comp: usize,
-    s_comp: usize,
-    d_drive: u32,
-    device_pairs: Vec<(u32, u32)>,
-    device_ref: String,
-    model: ModelTable,
-    /// Pre-assembled conductor conductance matrix (channel edges added per solve).
-    base: openrdson_solver::Sparse,
-    /// Conductivity per material id (S/m), for visualization.
-    sigma: Vec<f64>,
-}
-
-impl DeviceExtraction {
-    pub fn build() -> Result<Self, String> {
-        Self::build_with(&MeshSettings::default())
-    }
-
-    pub fn build_with(settings: &MeshSettings) -> Result<Self, String> {
-        let paths = &settings.paths;
-        let mut layout = load_layout_ir(paths.layout_path(), paths.gds_map_path())
-            .map_err(|e| e.to_string())?;
-        correct_db_unit(&mut layout, settings);
-        layout.ports = openrdson_layout_db::read_ports_file(
-            paths.ports_path(),
-            layout.db_unit_meters,
-        )
-        .map_err(|e| e.to_string())?;
-        let stack = load_tech_stack(&paths.tech_ict).map_err(|e| e.to_string())?;
-        let map = read_sft_cci_map(&paths.layer_map).map_err(|e| e.to_string())?;
-
-        let conn = openrdson_layout_db::extract_connectivity(&layout, &stack, &map);
-        let d_comp = *conn.port_component.get("D").ok_or("no D component")?;
-        let s_comp = *conn.port_component.get("S").ok_or("no S component")?;
-
-        let templates = read_devtab_file(paths.devtab_path()).map_err(|e| e.to_string())?;
-        let devices = recognize(&layout, &templates, &RecognitionConfig::default());
-        // Extract a compact cluster of devices at fine resolution: the first
-        // device plus its nearest neighbours (so the window stays small).
-        const N_DEVICES: usize = 4;
-        let mut placed: Vec<_> = devices
-            .instances
-            .iter()
-            .filter(|i| i.bbox.is_some())
-            .collect();
-        if placed.is_empty() {
-            return Err("no recognized device".into());
-        }
-        let first = placed[0].bbox.unwrap();
-        let (fx, fy) = ((first.min_x + first.max_x) / 2.0, (first.min_y + first.max_y) / 2.0);
-        placed.sort_by(|a, b| {
-            let ca = a.bbox.unwrap();
-            let cb = b.bbox.unwrap();
-            let da = ((ca.min_x + ca.max_x) / 2.0 - fx).powi(2) + ((ca.min_y + ca.max_y) / 2.0 - fy).powi(2);
-            let db = ((cb.min_x + cb.max_x) / 2.0 - fx).powi(2) + ((cb.min_y + cb.max_y) / 2.0 - fy).powi(2);
-            da.partial_cmp(&db).unwrap()
-        });
-        let cluster: Vec<_> = placed.into_iter().take(N_DEVICES).collect();
-        let mut bb = cluster[0].bbox.unwrap();
-        for inst in &cluster[1..] {
-            let b = inst.bbox.unwrap();
-            bb.min_x = bb.min_x.min(b.min_x);
-            bb.min_y = bb.min_y.min(b.min_y);
-            bb.max_x = bb.max_x.max(b.max_x);
-            bb.max_y = bb.max_y.max(b.max_y);
-        }
-        let margin = 4e-6;
-        let (x0, y0, x1, y1) = (
-            bb.min_x - margin,
-            bb.min_y - margin,
-            bb.max_x + margin,
-            bb.max_y + margin,
-        );
-        let (cx, cy) = ((bb.min_x + bb.max_x) / 2.0, (bb.min_y + bb.max_y) / 2.0);
-        let device_ref = format!("cluster of {}", cluster.len());
-
-        let (solid, _) = assemble_stack(&layout, &stack, &map);
-        let window = openrdson_core::geometry::Bbox {
-            min_x: x0,
-            min_y: y0,
-            max_x: x1,
-            max_y: y1,
-        };
-        // Clip full-die routing polygons to the local window before meshing.
-        let local = openrdson_geometry::clip_model(&solid, window);
-
-        let cfg = MeshConfig {
-            lateral_cell: settings.device_lateral_m,
-            z_cell: settings.device_z_m,
-        };
-        let (mesh, _) = openrdson_meshing::mesh_model_global(&local, &cfg);
-        // Unweld nodes shared across nets so the mesh cannot short D/S.
-        let mesh = openrdson_extraction::split_nodes_by_component(&mesh, &conn.component_of);
-
-        let node_component = openrdson_extraction::node_components(&mesh, &conn.component_of);
-        let d_nodes = openrdson_extraction::terminal_nodes(&node_component, d_comp);
-        let s_nodes = openrdson_extraction::terminal_nodes(&node_component, s_comp);
-        if d_nodes.is_empty() || s_nodes.is_empty() {
-            return Err(format!(
-                "empty local terminal sets (D={}, S={})",
-                d_nodes.len(),
-                s_nodes.len()
-            ));
-        }
-        let nearest = |nodes: &[u32], x: f64, y: f64| -> u32 {
-            let mut best = nodes[0];
-            let mut bd = f64::INFINITY;
-            for &n in nodes {
-                let p = mesh.nodes[n as usize];
-                let d = (p.x - x).powi(2) + (p.y - y).powi(2);
-                if d < bd {
-                    bd = d;
-                    best = n;
-                }
-            }
-            best
-        };
-        let d_drive = nearest(&d_nodes, cx, cy);
-        let mut device_pairs = Vec::new();
-        for inst in &cluster {
-            let b = inst.bbox.unwrap();
-            let (icx, icy) = ((b.min_x + b.max_x) / 2.0, (b.min_y + b.max_y) / 2.0);
-            device_pairs.push((nearest(&d_nodes, icx, icy), nearest(&s_nodes, icx, icy)));
-        }
-
-        let csv = std::fs::read_to_string(&paths.model_csv).map_err(|e| e.to_string())?;
-        let model = ModelTable::from_csv(&csv)?;
-        let sigma = sigma_table(&local, &stack);
-        let (base, _) = openrdson_solver::assemble_conductance_by(&mesh, &|id| sigma[id as usize]);
-
-        Ok(Self {
-            mesh,
-            node_component,
-            d_comp,
-            s_comp,
-            d_drive,
-            device_pairs,
-            device_ref,
-            model,
-            base,
-            sigma,
-        })
-    }
-
-    pub fn device_ref(&self) -> &str {
-        &self.device_ref
-    }
-
-    pub fn mesh(&self) -> &openrdson_core::mesh::Mesh {
-        &self.mesh
-    }
-
-    pub fn mesh_stats(&self) -> (usize, usize) {
-        (self.mesh.nodes.len(), self.mesh.elements.len())
-    }
-
-    pub fn device_count(&self) -> usize {
-        self.device_pairs.len()
-    }
-
-    /// Reference-device on-resistance from the model table.
-    pub fn reference_r_on(&self, temperature: f64, vgs: f64, vds: f64) -> Option<f64> {
-        self.model.r_on(temperature, vgs, vds)
-    }
-
-    /// Full device (weff = 1 mm) channel resistance used by the extraction.
-    pub fn device_channel_resistance(&self, temperature: f64, vgs: f64, vds: f64) -> Option<f64> {
-        self.model.r_device(temperature, vgs, vds, 1e-3)
-    }
-
-    /// Per-device metal/contact access resistance implied by the extraction:
-    /// `Rds_cluster · n − R_channel`.
-    pub fn access_resistance(&self, temperature: f64, vgs: f64, vds: f64) -> Option<f64> {
-        let n = self.device_pairs.len() as f64;
-        let rds = self.rds(temperature, vgs, vds).ok()?;
-        let r_ch = self.model.r_device(temperature, vgs, vds, 1e-3)?;
-        Some(rds * n - r_ch)
-    }
-
-    /// SPICE netlist of the extracted device cluster at a bias: `n` parallel
-    /// branches, each `R_access` in series with the device channel.
-    pub fn spice_netlist(&self, temperature: f64, vgs: f64, vds: f64) -> Option<String> {
-        let n = self.device_pairs.len();
-        let r_access = self.access_resistance(temperature, vgs, vds)?;
-        let r_ch = self.model.r_device(temperature, vgs, vds, 1e-3)?;
-        let mut rs = Vec::new();
-        for i in 0..n {
-            rs.push(openrdson_netlist::NamedResistor {
-                a: "D".into(),
-                b: format!("mid{i}"),
-                resistance: r_access,
-            });
-            rs.push(openrdson_netlist::NamedResistor {
-                a: format!("mid{i}"),
-                b: "S".into(),
-                resistance: r_ch,
-            });
-        }
-        Some(openrdson_netlist::write_spice_resistors(
-            &format!("OpenRDSon extracted cluster ({n} devices) Vgs={vgs}"),
-            &rs,
-        ))
-    }
-
-    /// SPEF of the reduced two-terminal extracted network.
-    pub fn spef(&self, temperature: f64, vgs: f64, vds: f64) -> Option<String> {
-        let rds = self.rds(temperature, vgs, vds).ok()?;
-        let rs = vec![openrdson_netlist::NamedResistor {
-            a: "D".into(),
-            b: "S".into(),
-            resistance: rds,
-        }];
-        Some(openrdson_netlist::write_spef("design", &rs))
-    }
-
-    /// `Rds` at a bias, with each device's channel injected as a resistor.
-    ///
-    /// The nearest D node is driven to 1 V; every node not in the D net is
-    /// grounded (so the S metal sits at 0 V). The D metal network floats so its
-    /// access resistance is included.
-    pub fn rds(&self, temperature: f64, vgs: f64, vds: f64) -> Result<f64, String> {
-        let (a, u) = self.solve(temperature, vgs, vds)?;
-        Ok(openrdson_solver::effective_resistance_from_power(&a, &u))
-    }
-
-    /// Assemble the biased conductance matrix and solve the nodal potentials.
-    fn solve(
-        &self,
-        temperature: f64,
-        vgs: f64,
-        vds: f64,
-    ) -> Result<(openrdson_solver::Sparse, Vec<f64>), String> {
-        let r = self
-            .model
-            .r_device(temperature, vgs, vds, 1e-3)
-            .ok_or("no channel R")?;
-        let g = if r.is_finite() && r > 0.0 { 1.0 / r } else { 0.0 };
-        let mut a = self.base.clone();
-        for &(dn, sn) in &self.device_pairs {
-            a.add_edge(dn, sn, g);
-        }
-        a.finalize();
-        let mut fixed = std::collections::BTreeMap::new();
-        fixed.insert(self.d_drive, 1.0);
-        for (i, c) in self.node_component.iter().enumerate() {
-            if i as u32 == self.d_drive {
-                continue;
-            }
-            if *c == Some(self.d_comp) {
-                continue;
-            }
-            fixed.insert(i as u32, 0.0);
-        }
-        let _ = self.s_comp;
-        let u = openrdson_solver::solve_dirichlet(&a, &fixed, 1e-7, 6000)?;
-        Ok((a, u))
-    }
-
-    /// Nodal potentials at a bias, for VTK/ParaView export (same setup as `rds`).
-    pub fn viz_potentials(&self, temperature: f64, vgs: f64, vds: f64) -> Result<Vec<f64>, String> {
-        Ok(self.solve(temperature, vgs, vds)?.1)
-    }
-
-    /// Total terminal current (A) at a bias (the D port is driven at 1 V).
-    pub fn total_current(&self, temperature: f64, vgs: f64, vds: f64) -> Result<f64, String> {
-        let r = self.rds(temperature, vgs, vds)?;
-        Ok(if r.is_finite() && r > 0.0 { 1.0 / r } else { 0.0 })
-    }
-
-    /// Conductivity per material id (S/m), for per-element visualization.
-    pub fn sigma(&self) -> &[f64] {
-        &self.sigma
     }
 }
 
@@ -2999,15 +2737,17 @@ impl SheetFullArray {
 /// resistance-report computation — so a stale cache is re-solved instead of
 /// replayed. The binary format version inside [`FieldCache`] tracks layout
 /// changes; this constant tracks content-semantics changes.
-pub const FIELD_CACHE_CONTENT_VERSION: u32 = 2;
+pub const FIELD_CACHE_CONTENT_VERSION: u32 = 3;
 
 pub fn field_cache_fingerprint(settings: &MeshSettings) -> String {
     let mut s = format!(
-        "v{FIELD_CACHE_CONTENT_VERSION}|cell={:.6e}|cap={}|via={:.6e}|temp={:.3}",
+        "v{FIELD_CACHE_CONTENT_VERSION}|cell={:.6e}|cap={}|via={:.6e}|temp={:.3}|model={:?}|dbu={:?}",
         settings.sheet_cell_m,
         settings.sheet_cap,
         settings.via_group_radius_m,
-        settings.temperature_c
+        settings.temperature_c,
+        settings.missing_model,
+        settings.db_unit_nm
     );
     for (l, c) in &settings.per_layer_cell_m {
         s.push_str(&format!("|{l}={:.6e}", c));
@@ -3028,6 +2768,16 @@ pub fn field_cache_fingerprint(settings: &MeshSettings) -> String {
             t.dy_um,
             t.layer.as_deref().unwrap_or("")
         ));
+    }
+    // Input database files: path + size + mtime, so switching databases or
+    // regenerating a file (model.csv, layout, ICT, ...) invalidates the cache.
+    // A missing file still contributes its path, so pointing at a different
+    // (empty) database also changes the fingerprint.
+    for p in settings.paths.input_files() {
+        let meta = std::fs::metadata(&p)
+            .ok()
+            .and_then(|m| m.modified().ok().map(|mt| (m.len(), mt)));
+        s.push_str(&format!("|f{}={:?}", p.display(), meta));
     }
     let mut h: u64 = 0xcbf29ce484222325;
     for b in s.bytes() {

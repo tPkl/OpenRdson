@@ -3,16 +3,4 @@ name = "openrdson-channel"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "OpenRDSon power-device channel model (lookup table + ngspice co-sim)"
-
-
-[dependencies]
-openrdson-core = { workspace = true }
-openrdson-layout-db = { path = "../layout-db" }
-openrdson-device-recognition = { path = "../device-recognition" }
-
-[dev-dependencies]
-openrdson-geometry = { path = "../geometry" }
-openrdson-meshing = { path = "../meshing" }
-openrdson-solver = { path = "../solver" }
-openrdson-extraction = { path = "../extraction" }
+description = "OpenRDSon power-device channel model (bias-dependent Id lookup table)"

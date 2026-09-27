@@ -1,7 +1,7 @@
 //! Analytic acceptance tests for resistive network extraction.
 
 use openrdson_core::geometry::{Point, SolidModel, SolidRegion};
-use openrdson_extraction::{terminal_network, two_terminal_resistance};
+use openrdson_extraction::two_terminal_resistance;
 use openrdson_geometry::extrude_polygon;
 use openrdson_meshing::{mesh_model, weld_nodes, MeshConfig};
 
@@ -88,27 +88,4 @@ fn two_materials_in_series_add_resistance() {
         (r - analytic).abs() / analytic < 1e-6,
         "series R={r:e} vs analytic {analytic:e}"
     );
-}
-
-#[test]
-fn terminal_network_is_symmetric_with_zero_diagonal() {
-    let (l, w, t) = (4e-6, 1e-6, 0.2e-6);
-    let model = SolidModel {
-        regions: vec![bar_region(0.0, l, w, t, 1)],
-        material_names: vec!["A".into()],
-    };
-    let (mesh, _) = mesh_model(&model, &cfg());
-    let mesh = weld_nodes(&mesh, 1e-12);
-
-    let terminals = vec![
-        ("D".to_string(), terminals_at_x(&mesh, 0.0)),
-        ("S".to_string(), terminals_at_x(&mesh, l)),
-    ];
-    let net = terminal_network(&mesh, &|_| 1e6, &terminals, 1e-12, 5000).unwrap();
-    assert_eq!(net.terminals, vec!["D", "S"]);
-    assert_eq!(net.rmatrix[0][0], 0.0);
-    assert_eq!(net.rmatrix[1][1], 0.0);
-    assert!(net.rmatrix[0][1] > 0.0);
-    assert!((net.rmatrix[0][1] - net.rmatrix[1][0]).abs() < 1e-18);
-    assert_eq!(net.resistance("D", "S"), Some(net.rmatrix[0][1]));
 }

@@ -1,7 +1,4 @@
-use openrdson_core::mesh::{Element, ElementType, Mesh, Point3};
-use openrdson_io::{
-    cell_current_density, cell_power_current, write_vtu, VtkCellType, VtuMesh,
-};
+use openrdson_io::{write_vtu, VtkCellType, VtuMesh};
 
 #[test]
 fn writes_unstructured_grid_with_point_and_cell_data() {
@@ -67,73 +64,6 @@ fn subset_cells_remaps_points_and_data() {
     assert_eq!(sub.point_data[0].1, vec![1.0, 4.0, 2.0, 0.0]);
     assert_eq!(sub.cells[0].1, vec![0, 1, 2, 3]);
     assert_eq!(sub.cell_data[0].1, vec![1.0]);
-}
-
-#[test]
-fn current_density_of_linear_field_on_a_cube() {
-    // Unit cube, u = x -> grad u = (1, 0, 0), so |J| = sigma.
-    let nodes = vec![
-        Point3::new(0.0, 0.0, 0.0),
-        Point3::new(1.0, 0.0, 0.0),
-        Point3::new(1.0, 1.0, 0.0),
-        Point3::new(0.0, 1.0, 0.0),
-        Point3::new(0.0, 0.0, 1.0),
-        Point3::new(1.0, 0.0, 1.0),
-        Point3::new(1.0, 1.0, 1.0),
-        Point3::new(0.0, 1.0, 1.0),
-    ];
-    let mesh = Mesh {
-        nodes: nodes.clone(),
-        elements: vec![Element {
-            kind: ElementType::Hex,
-            nodes: vec![0, 1, 2, 3, 4, 5, 6, 7],
-            material_id: 1,
-            net: None,
-            layer: None,
-            device_ref: None,
-            source_polygon: None,
-        }],
-        sets: Default::default(),
-    };
-    let potential: Vec<f64> = nodes.iter().map(|p| p.x).collect();
-    let sigma = vec![0.0, 2.0]; // material id 1 -> 2 S/m
-    let j = cell_current_density(&mesh, &potential, &sigma);
-    assert_eq!(j.len(), 1);
-    assert!((j[0] - 2.0).abs() < 1e-12, "got {}", j[0]);
-}
-
-#[test]
-fn power_and_current_of_linear_field_on_a_cube() {
-    // Unit cube, u = x, sigma = 2: power = sigma|grad|^2 V = 2 W, dV = 1 -> I = 2 A.
-    let nodes = vec![
-        Point3::new(0.0, 0.0, 0.0),
-        Point3::new(1.0, 0.0, 0.0),
-        Point3::new(1.0, 1.0, 0.0),
-        Point3::new(0.0, 1.0, 0.0),
-        Point3::new(0.0, 0.0, 1.0),
-        Point3::new(1.0, 0.0, 1.0),
-        Point3::new(1.0, 1.0, 1.0),
-        Point3::new(0.0, 1.0, 1.0),
-    ];
-    let mesh = Mesh {
-        nodes: nodes.clone(),
-        elements: vec![Element {
-            kind: ElementType::Hex,
-            nodes: vec![0, 1, 2, 3, 4, 5, 6, 7],
-            material_id: 1,
-            net: None,
-            layer: None,
-            device_ref: None,
-            source_polygon: None,
-        }],
-        sets: Default::default(),
-    };
-    let potential: Vec<f64> = nodes.iter().map(|p| p.x).collect();
-    let sigma = vec![0.0, 2.0];
-    let (p, i) = cell_power_current(&mesh, &potential, &sigma);
-    assert_eq!(p.len(), 1);
-    assert!((p[0] - 2.0).abs() < 1e-12, "power = {}", p[0]);
-    assert!((i[0] - 2.0).abs() < 1e-12, "current = {}", i[0]);
 }
 
 #[test]

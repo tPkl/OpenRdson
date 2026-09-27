@@ -8,9 +8,6 @@
 # <command> is optional and defaults to `all`. Commands:
 #     all        Rdson solve + table + viz export
 #     sheet-rds  full-array sheet extraction (Rds vs Vgs)
-#     device-rds device-local 3D FEM extraction
-#     mode-a     Mode-A (access-resistance) extraction
-#     netlist    SPICE/SPEF export
 #     viz        write the visualization database (GDS/KLayout + VTU/ParaView)
 #
 # Relative paths are resolved against the current working directory. Any key
@@ -66,10 +63,6 @@ meshing:
   # Radius within which same-net vias are grouped into one equivalent via (um).
   # 0 disables grouping.
   via_group_radius_um: 0.5
-
-  # Device-local 3D FEM mesh cell sizes (um).
-  device_lateral_um: 1.0
-  device_z_um: 0.5
 
   # Optional per-physical-layer sheet cell overrides (um). Uncomment to refine a
   # specific layer, e.g. a thin high-resistance poly layer.

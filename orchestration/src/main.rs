@@ -2,7 +2,7 @@
 //!
 //! Usage: `openrdson [FLAGS] <command>`
 //!
-//! Commands: `sheet-rds`, `viz`, `device-rds`, `mode-a`, `netlist`, `all`.
+//! Commands: `sheet-rds`, `viz`, `all`.
 //! Every extraction command reads its input database from the YAML config
 //! (`--config <file>`); see `--print-default-config` for the template.
 //!
@@ -33,9 +33,6 @@ USAGE:
 COMMANDS:
     all           Rdson solve + table + viz export [default]
     sheet-rds     Full-array 2.5D sheet extraction; prints the Rds(Vgs) table
-    device-rds    Device-local 3D FEM extraction
-    mode-a        Mode-A (access-resistance) extraction
-    netlist       SPICE / SPEF export
     viz           Export the solved field (GDS/KLayout + VTU/ParaView); cached
                   to `field_cache_<hash>.bin`, re-solves only when stale
 
@@ -52,7 +49,6 @@ MESHING ACCURACY (R3D-style):
     --sheet-cell <um>         Full-array sheet cell size (um)
     --sheet-cap <n>           Max cells per rectangle dimension
     --via-radius <um>         Group same-net vias within a radius (0 = off)
-    --device-cell <um>        Device-local 3D FEM cell size
 
 ADAPTIVE (QUADTREE) MESHING:
     --adaptive                Enable the refine→solve loop
@@ -112,12 +108,11 @@ fn main() {
     };
     openrdson_core::log::set_level(level);
 
-    const VALUE_FLAGS: [&str; 13] = [
+    const VALUE_FLAGS: [&str; 12] = [
         "--mesh-config",
         "--via-radius",
         "--sheet-cell",
         "--sheet-cap",
-        "--device-cell",
         "--db-unit-nm",
         "--out-dbu-nm",
         "--viz-zscale",
@@ -155,12 +150,9 @@ fn main() {
         );
     }
     match cmd.as_str() {
-        "device-rds" => run_device_rds(&settings),
-        "mode-a" => run_mode_a(&settings),
         "sheet-rds" => {
             let _ = run_sheet_rds(&settings);
         }
-        "netlist" => run_netlist(&settings),
         "viz" => run_viz(&settings, config.as_ref(), None),
         "all" | _ => run_all(&settings, config.as_ref()),
     }
@@ -198,8 +190,6 @@ fn mesh_settings(
         s.sheet_cell_m = c.meshing.sheet_cell_um * 1e-6;
         s.sheet_cap = c.meshing.sheet_cap;
         s.via_group_radius_m = c.meshing.via_group_radius_um * 1e-6;
-        s.device_lateral_m = c.meshing.device_lateral_um * 1e-6;
-        s.device_z_m = c.meshing.device_z_um * 1e-6;
         s.per_layer_cell_m = c
             .meshing
             .per_layer_cell_um
@@ -259,9 +249,6 @@ fn mesh_settings(
     if let Some(v) = get("--sheet-cap").and_then(|v| v.parse::<usize>().ok()) {
         s.sheet_cap = v;
     }
-    if let Some(v) = get("--device-cell").and_then(|v| v.parse::<f64>().ok()) {
-        s.device_lateral_m = v * 1e-6;
-    }
     if let Some(v) = get("--db-unit-nm").and_then(|v| v.parse::<f64>().ok()) {
         s.db_unit_nm = Some(v);
     }
@@ -293,172 +280,82 @@ fn mesh_settings(
 }
 
 
-fn run_device_rds(settings: &openrdson_validation::MeshSettings) {
-    let _section = openrdson_core::log::SectionGuard::new("device-rds");
-    log_databases(settings);
-    match openrdson_validation::DeviceExtraction::build_with(settings) {
-        Ok(de) => {
-            let (n, e) = de.mesh_stats();
-            println!(
-                "device-rds: device={} local mesh={n} nodes / {e} elements",
-                de.device_ref()
-            );
-            println!("  {:>6}  {:>14}  {:>14}", "Vgs", "Rds(-1.5V)", "Rds(-0.25V)");
-            for vgs in [0.0f64, -1.0, -2.0, -2.5] {
-                let r_deep = de.rds(27.0, vgs, -1.5).unwrap_or(f64::NAN);
-                let r_lin = de.rds(27.0, vgs, -0.25).unwrap_or(f64::NAN);
-                println!("  {vgs:>6.2}  {r_deep:>14.4e}  {r_lin:>14.4e}");
-            }
-        }
-        Err(e) => eprintln!("device-rds failed: {e}"),
-    }
-}
-
-fn run_mode_a(settings: &openrdson_validation::MeshSettings) {
-    let _section = openrdson_core::log::SectionGuard::new("mode-a");
-    let de = match openrdson_validation::DeviceExtraction::build_with(settings) {
-        Ok(d) => d,
-        Err(e) => {
-            eprintln!("mode-a build failed: {e}");
-            return;
-        }
-    };
-    let n = de.device_count();
-    let r_access = match de.access_resistance(27.0, -2.5, -0.25) {
-        Some(b) => b,
-        None => {
-            eprintln!("mode-a: could not determine access resistance");
-            return;
-        }
-    };
-    // Fit a cubic behavioral channel to the device R(Vgs) curve over the
-    // strong-inversion range. (The foundry BSIM model is Spectre-format and not
-    // directly loadable by ngspice; the polynomial tracks model.csv closely.)
-    let samples: Vec<(f64, f64)> = [-2.5f64, -2.25, -2.0, -1.75, -1.5, -1.25, -1.0]
-        .iter()
-        .filter_map(|v| de.device_channel_resistance(27.0, *v, -0.25).map(|r| (*v, r)))
-        .collect();
-    let coeffs =
-        openrdson_channel::fit_channel_polynomial(&samples).expect("polynomial channel fit");
-    let ng = openrdson_channel::Ngspice::default();
-    if !ng.is_available() {
-        eprintln!("mode-a: ngspice not available");
-        return;
-    }
-    println!(
-        "mode-a: cluster of {n} devices, R_access/device={r_access:.4} ohm, cubic channel fit"
-    );
-    println!(
-        "  {:>6}  {:>14}  {:>14}",
-        "Vgs", "ngspice Rds", "FEM Rds"
-    );
-    for vgs in [0.0f64, -1.0, -1.5, -2.0, -2.5] {
-        let deck = openrdson_channel::mode_a_polynomial_deck(r_access, coeffs, -0.25, vgs);
-        let rds_ng = ng
-            .operating_point(&deck)
-            .ok()
-            .and_then(|op| openrdson_channel::rds_from_op(&op, -0.25))
-            .map(|r| r / n as f64)
-            .unwrap_or(f64::NAN);
-        let rds_fem = de.rds(27.0, vgs, -0.25).unwrap_or(f64::NAN);
-        println!("  {vgs:>6.2}  {rds_ng:>14.4e}  {rds_fem:>14.4e}");
-    }
-}
-
 fn run_sheet_rds(
     settings: &openrdson_validation::MeshSettings,
 ) -> Option<openrdson_validation::SheetFullArray> {
     let _section = openrdson_core::log::SectionGuard::new("sheet-rds");
     log_databases(settings);
-    // Adaptive (quadtree) refinement benchmark when enabled.
-    if settings.adaptive.enabled {
-        match openrdson_validation::SheetFullArray::build_with(settings) {
-            Ok(fa) => match fa.adaptive_solve(&settings.adaptive, settings.temperature_c) {
-                Ok(rep) => {
-                    let uniform = fa.rds(settings.temperature_c).unwrap_or(f64::NAN);
-                    println!(
-                        "adaptive: Rds={:.6e} ohm  nodes={} edges={} cells={} iters={} levels={:?}",
-                        rep.rds, rep.nodes, rep.edges, rep.cells, rep.iters, rep.levels
-                    );
-                    println!("  uniform (base grid) Rds={uniform:.6e} ohm");
-                    for (n, r, eta) in &rep.history {
-                        println!("   iter: nodes={n:>7} Rds={r:>12.6e} indicator={eta:.6e}");
-                    }
-                }
-                Err(e) => eprintln!("adaptive failed: {e}"),
-            },
-            Err(e) => eprintln!("adaptive build failed: {e}"),
-        }
-    }
-    // Summary at the configured bias.
-    let summary_fa = match openrdson_validation::SheetFullArray::build_with(settings) {
-        Ok(fa) => {
-            let (nodes, edges, channels) = fa.network_stats();
-            println!("sheet-rds: {nodes} nodes / {edges} edges / {channels} channel connections");
-            println!("  open (no channel) = {:?}", fa.rds_open());
-            if let Ok(report) = fa.resistance_report(settings.temperature_c) {
-                print!("{report}");
-            }
-            Some(fa)
-        }
+    let temperature = settings.temperature_c;
+
+    // Build the base (uniform) array once.
+    let base = match openrdson_validation::SheetFullArray::build_with(settings) {
+        Ok(f) => f,
         Err(e) => {
             eprintln!("sheet-rds failed: {e}");
-            None
+            return None;
         }
     };
-    // Vgs sweep across the model's range (gate = Vsource + Vgs), if a gate and
-    // source terminal are configured.
-    let term_v = |n: &str| {
-        settings
-            .terminals
-            .iter()
-            .find(|t| t.name.eq_ignore_ascii_case(n))
-            .map(|t| t.voltage)
+
+    // Adaptive refinement: solve on the refined quadtree mesh and report the
+    // *refined* result. The refined array replaces the base array for the
+    // resistance summary, the Vgs sweep and the visualization export, so the
+    // reported numbers all come from the adaptive mesh (not the base grid).
+    let fa = if settings.adaptive.enabled {
+        match base.adaptive_solve_full(&settings.adaptive, temperature) {
+            Ok((rep, refined)) => {
+                // The first history entry is the base (uniform) grid solve, so
+                // it doubles as the "before refinement" reference without an
+                // extra solve.
+                let uniform = rep.history.first().map(|h| h.1).unwrap_or(f64::NAN);
+                println!(
+                    "adaptive: Rds={:.6e} ohm  nodes={} edges={} cells={} iters={} levels={:?}",
+                    rep.rds, rep.nodes, rep.edges, rep.cells, rep.iters, rep.levels
+                );
+                println!("  uniform (base grid) Rds={uniform:.6e} ohm");
+                for (n, r, eta) in &rep.history {
+                    println!("   iter: nodes={n:>7} Rds={r:>12.6e} indicator={eta:.6e}");
+                }
+                refined
+            }
+            Err(e) => {
+                eprintln!("adaptive failed: {e}");
+                base
+            }
+        }
+    } else {
+        base
     };
-    let (Some(_), Some(vs)) = (term_v("g"), term_v("s")) else {
-        return summary_fa;
-    };
-    // Vgs sweep: print a clean table. The per-build INFO/WARN logging (device
-    // import, metal/via summaries, sub-cell-footprint warnings, ...) is lowered
-    // to ERROR so it doesn't interleave with the table; hard failures still
-    // surface via the `Err` branch below.
+
+    // Summary at the configured bias (on the refined mesh when adaptive).
+    let (nodes, edges, channels) = fa.network_stats();
+    println!("sheet-rds: {nodes} nodes / {edges} edges / {channels} channel connections");
+    println!("  open (no channel) = {:?}", fa.rds_open());
+    if let Ok(report) = fa.resistance_report(temperature) {
+        print!("{report}");
+    }
+
+    // Vgs sweep: re-use the same mesh, only moving the gate bias, so each step
+    // is a cheap re-solve instead of a full network rebuild.
+    let has_g = settings
+        .terminals
+        .iter()
+        .any(|t| t.name.eq_ignore_ascii_case("g"));
+    let has_s = settings
+        .terminals
+        .iter()
+        .any(|t| t.name.eq_ignore_ascii_case("s"));
+    if !(has_g && has_s) {
+        return Some(fa);
+    }
     println!("\nVgs sweep (Rdson vs gate-source voltage):");
     println!("  {:>6}  {:>14}", "Vgs", "Rds(ohm)");
-    let saved_level = openrdson_core::log::level();
-    openrdson_core::log::set_level(openrdson_core::log::ERROR);
     for vgs in [0.0, -0.5, -1.0, -1.5, -2.0, -2.5] {
-        let mut s = settings.clone();
-        for t in &mut s.terminals {
-            if t.name.eq_ignore_ascii_case("g") {
-                t.voltage = vs + vgs;
-            }
-        }
-        match openrdson_validation::SheetFullArray::build_with(&s) {
-            Ok(fa) => {
-                let r = fa.rds(s.temperature_c).unwrap_or(f64::NAN);
-                println!("  {vgs:>6.2}  {r:>14.4e}");
-            }
+        match fa.rds_at_vgs(vgs, temperature) {
+            Ok(r) => println!("  {vgs:>6.2}  {r:>14.4e}"),
             Err(e) => eprintln!("sheet-rds failed: {e}"),
         }
     }
-    openrdson_core::log::set_level(saved_level);
-    summary_fa
-}
-
-fn run_netlist(settings: &openrdson_validation::MeshSettings) {
-    let _section = openrdson_core::log::SectionGuard::new("netlist");
-    match openrdson_validation::DeviceExtraction::build_with(settings) {
-        Ok(de) => {
-            match de.spice_netlist(27.0, -2.5, -0.25) {
-                Some(spice) => println!("{spice}"),
-                None => eprintln!("could not build SPICE netlist"),
-            }
-            if let Some(spef) = de.spef(27.0, -2.5, -0.25) {
-                println!("\n{spef}");
-            }
-        }
-        Err(e) => eprintln!("netlist failed: {e}"),
-    }
+    Some(fa)
 }
 
 fn to_du(v: f64, db_unit_meters: f64) -> i32 {
@@ -1142,7 +1039,7 @@ fn run_viz(
     }
     use openrdson_core::{log_info, log_warn};
     use openrdson_io::{
-        cell_current_density, cell_power_current, write_gds_file, write_grouped_colormap,
+        write_gds_file, write_grouped_colormap,
         write_named_lyp, write_vtu, GdsBoundary, VizItem, VtkCellType, VtuMesh,
     };
     let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
@@ -1155,46 +1052,17 @@ fn run_viz(
     }
 
     let temperature = config.map(|c| c.solver.temperature_c).unwrap_or(27.0);
-    // Load the solved field from the cache (keyed by the accuracy/bias settings),
-    // or solve it now and write the cache for the next run / post-processing.
     let fp = openrdson_validation::field_cache_fingerprint(settings);
     let cache_path = out.join(format!("field_cache_{fp}.bin"));
-    let cache = match openrdson_validation::FieldCache::load(&cache_path) {
-        Ok(c) => {
-            log_info!("loaded field cache {}", cache_path.display());
-            c
-        }
-        Err(_) => {
-            let mut fa = match prebuilt {
-                Some(f) => f,
-                None => {
-                    log_info!("building full-array sheet extraction for visualization...");
-                    match openrdson_validation::SheetFullArray::build_with(settings) {
-                        Ok(f) => f,
-                        Err(e) => {
-                            eprintln!("viz failed: {e}");
-                            return;
-                        }
-                    }
-                }
-            };
-            // When adaptive refinement is enabled, solve on the quadtree mesh.
-            if settings.adaptive.enabled {
-                match fa.adaptive_solve_full(&settings.adaptive, temperature) {
-                    Ok((report, fa_adaptive)) => {
-                        log_info!(
-                            "adaptive mesh: Rds={:.6e} ohm nodes={} cells={} iters={} levels={:?}",
-                            report.rds,
-                            report.nodes,
-                            report.cells,
-                            report.iters,
-                            report.levels
-                        );
-                        fa = fa_adaptive;
-                    }
-                    Err(e) => log_warn!("adaptive solve failed (using uniform mesh): {e}"),
-                }
-            }
+    // When we already hold a freshly-solved array (the `all` path), use it
+    // directly rather than loading a cached field: a stale cache would export a
+    // field that disagrees with the Rds table `run_sheet_rds` just printed.
+    let standalone = prebuilt.is_none();
+    let cache = match prebuilt {
+        Some(fa) => {
+            // `prebuilt` is already the final array `run_sheet_rds` solved and
+            // reported (adaptive or uniform); just render its field. Re-running
+            // `adaptive_solve_full` here would re-do the whole refinement loop.
             let c = match fa.field_cache(temperature) {
                 Ok(c) => c,
                 Err(e) => {
@@ -1202,12 +1070,54 @@ fn run_viz(
                     return;
                 }
             };
-            match c.save(&cache_path) {
-                Ok(()) => log_info!("saved field cache {}", cache_path.display()),
-                Err(e) => log_warn!("failed to save field cache: {e}"),
-            }
+            let _ = c.save(&cache_path);
             c
         }
+        None => match openrdson_validation::FieldCache::load(&cache_path) {
+            Ok(c) => {
+                log_info!("loaded field cache {}", cache_path.display());
+                c
+            }
+            Err(_) => {
+                log_info!("building full-array sheet extraction for visualization...");
+                let mut fa = match openrdson_validation::SheetFullArray::build_with(settings) {
+                    Ok(f) => f,
+                    Err(e) => {
+                        eprintln!("viz failed: {e}");
+                        return;
+                    }
+                };
+                // When adaptive refinement is enabled, solve on the quadtree mesh.
+                if settings.adaptive.enabled {
+                    match fa.adaptive_solve_full(&settings.adaptive, temperature) {
+                        Ok((report, fa_adaptive)) => {
+                            log_info!(
+                                "adaptive mesh: Rds={:.6e} ohm nodes={} cells={} iters={} levels={:?}",
+                                report.rds,
+                                report.nodes,
+                                report.cells,
+                                report.iters,
+                                report.levels
+                            );
+                            fa = fa_adaptive;
+                        }
+                        Err(e) => log_warn!("adaptive solve failed (using uniform mesh): {e}"),
+                    }
+                }
+                let c = match fa.field_cache(temperature) {
+                    Ok(c) => c,
+                    Err(e) => {
+                        eprintln!("viz solve failed: {e}");
+                        return;
+                    }
+                };
+                match c.save(&cache_path) {
+                    Ok(()) => log_info!("saved field cache {}", cache_path.display()),
+                    Err(e) => log_warn!("failed to save field cache: {e}"),
+                }
+                c
+            }
+        },
     };
     let layout_db = cache.db_unit_meters;
     let args: Vec<String> = std::env::args().collect();
@@ -1227,21 +1137,9 @@ fn run_viz(
         .or_else(|| config.map(|c| c.visualization.z_scale))
         .unwrap_or(25.0);
     let n_bins = config.map(|c| c.visualization.bins).unwrap_or(32).max(2);
-    // Nominal gate/source and drain/source biases for the device-cluster FEM
-    // view, taken from the named terminals where present.
-    let term_v = |name: &str| {
-        config.and_then(|c| {
-            c.terminals
-                .iter()
-                .find(|t| t.name.eq_ignore_ascii_case(name))
-                .map(|t| t.voltage)
-        })
-    };
-    let (dev_vgs, dev_vds) = match (term_v("G"), term_v("S"), term_v("D")) {
-        (Some(g), Some(s), Some(d)) => (g - s, d - s),
-        _ => (-2.5, -1.5),
-    };
-    if !cache.report.is_empty() {
+    // A standalone `viz` prints the (cached or freshly-solved) resistance report;
+    // the `all` path already printed it via `run_sheet_rds`, so it is skipped here.
+    if standalone && !cache.report.is_empty() {
         print!("{}", cache.report);
     }
     let cells = cache.cell_scalars();
@@ -1535,156 +1433,11 @@ fn run_viz(
             }
     }
 
-    // Optional: the device-local 3D FEM mesh, as its own file.
-    if let Ok(de) = openrdson_validation::DeviceExtraction::build_with(settings) {
-        let mesh = de.mesh();
-        let mut boundaries = Vec::new();
-        for e in &mesh.elements {
-            let (mut minx, mut miny, mut maxx, mut maxy) =
-                (f64::INFINITY, f64::INFINITY, f64::NEG_INFINITY, f64::NEG_INFINITY);
-            for &n in &e.nodes {
-                let p = mesh.nodes[n as usize];
-                minx = minx.min(p.x);
-                miny = miny.min(p.y);
-                maxx = maxx.max(p.x);
-                maxy = maxy.max(p.y);
-            }
-            boundaries.push(GdsBoundary {
-                layer: 2000 + e.material_id as i16,
-                datatype: 0,
-                points: vec![
-                    (to_du(minx, db), to_du(miny, db)),
-                    (to_du(maxx, db), to_du(miny, db)),
-                    (to_du(maxx, db), to_du(maxy, db)),
-                    (to_du(minx, db), to_du(maxy, db)),
-                ],
-            });
-        }
-        let dmesh = out.join("device_mesh.gds");
-        if write_gds_file(&dmesh, "OPENRDSON", db, &[("MESH".into(), boundaries)]).is_ok() {
-            log_info!("wrote {} ({} elements)", dmesh.display(), mesh.elements.len());
-        }
-
-        // VTK/ParaView export of the 3D FEM mesh: per-vertex potential plus
-        // per-element material id and conductivity.
-        let sigma = de.sigma();
-        let points: Vec<[f64; 3]> = mesh.nodes.iter().map(|p| [p.x, p.y, p.z]).collect();
-        let cells: Vec<(VtkCellType, Vec<u32>)> = mesh
-            .elements
-            .iter()
-            .map(|e| (e.kind.into(), e.nodes.clone()))
-            .collect();
-        let pot = de.viz_potentials(temperature, dev_vgs, dev_vds).unwrap_or_default();
-        let solved = pot.len() == mesh.nodes.len();
-        let jmag = if solved {
-            cell_current_density(mesh, &pot, sigma)
-        } else {
-            vec![0.0; mesh.elements.len()]
-        };
-        let (power, current) = if solved {
-            cell_power_current(mesh, &pot, sigma)
-        } else {
-            (
-                vec![0.0; mesh.elements.len()],
-                vec![0.0; mesh.elements.len()],
-            )
-        };
-        let i_total = de.total_current(temperature, dev_vgs, dev_vds).unwrap_or(0.0);
-        let it2 = (i_total * i_total).max(1e-300);
-        let cell_res: Vec<f64> = power.iter().map(|p| p / it2).collect::<Vec<f64>>();
-        let mut point_data = Vec::new();
-        if pot.len() == points.len() {
-            point_data.push(("potential_V".to_string(), pot));
-        }
-        // Map each element to a physical layer (falling back to its material).
-        let mut layer_ids: std::collections::BTreeMap<String, usize> =
-            std::collections::BTreeMap::new();
-        let mut layer_names: Vec<String> = Vec::new();
-        let mut cell_layer: Vec<f64> = Vec::with_capacity(mesh.elements.len());
-        for e in &mesh.elements {
-            let name = e
-                .layer
-                .clone()
-                .unwrap_or_else(|| format!("material_{}", e.material_id));
-            let next = layer_names.len();
-            let id = *layer_ids.entry(name.clone()).or_insert_with(|| {
-                layer_names.push(name);
-                next
-            });
-            cell_layer.push(id as f64);
-        }
-        // Map each element to a net id.
-        let mut net_ids: std::collections::BTreeMap<String, usize> =
-            std::collections::BTreeMap::new();
-        let mut net_names: Vec<String> = Vec::new();
-        let mut cell_net: Vec<f64> = Vec::with_capacity(mesh.elements.len());
-        for e in &mesh.elements {
-            let name = e.net.clone().unwrap_or_default();
-            let next = net_names.len();
-            let id = *net_ids.entry(name.clone()).or_insert_with(|| {
-                net_names.push(name);
-                next
-            });
-            cell_net.push(id as f64);
-        }
-        let vm = VtuMesh {
-            points,
-            cells,
-            point_data,
-            cell_data: vec![
-                (
-                    "material_id".to_string(),
-                    mesh.elements.iter().map(|e| e.material_id as f64).collect(),
-                ),
-                (
-                    "conductivity_S_m".to_string(),
-                    mesh.elements
-                        .iter()
-                        .map(|e| sigma.get(e.material_id as usize).copied().unwrap_or(0.0))
-                        .collect(),
-                ),
-                ("layer_id".to_string(), cell_layer.clone()),
-                ("net_id".to_string(), cell_net),
-                ("current_density_A_m2".to_string(), jmag),
-                ("power_W".to_string(), power),
-                ("current_A".to_string(), current),
-                ("resistance_ohm".to_string(), cell_res),
-            ],
-        };
-        let dpath = out.join("device.vtu");
-        match write_vtu(&dpath, &vm) {
-            Ok(()) => log_info!(
-                "wrote {} ({} nodes, {} elements, {} layers)",
-                dpath.display(),
-                vm.points.len(),
-                vm.cells.len(),
-                layer_names.len()
-            ),
-            Err(e) => log_warn!("failed to write device.vtu: {e}"),
-        }
-        for (id, name) in layer_names.iter().enumerate() {
-            let keep: Vec<bool> = cell_layer.iter().map(|&l| l as usize == id).collect();
-            if !keep.iter().any(|&k| k) {
-                continue;
-            }
-            let sub = vm.subset_cells(&keep);
-            let f = out.join(format!("device_{}.vtu", sanitize(name)));
-            match write_vtu(&f, &sub) {
-                Ok(()) => log_info!(
-                    "wrote {} ({} nodes, {} elements)",
-                    f.display(),
-                    sub.points.len(),
-                    sub.cells.len()
-                ),
-                Err(e) => log_warn!("failed to write {}: {e}", f.display()),
-            }
-        }
-    }
     println!("visualization written to {}", out.display());
-    println!("mesh.gds (per-layer mesh mosaic), potential.gds, current_density.gds, device_mesh.gds");
+    println!("mesh.gds (per-layer mesh mosaic), potential.gds, current_density.gds");
     println!("open a .gds in KLayout; its .lyp is auto-loaded (same base name)");
-    println!("sheet.vtu, device.vtu (VTK/ParaView: interpolated colormap, quantity dropdown)");
-    println!("sheet_<Layer>.vtu, device_<Layer>.vtu (one file per physical layer)");
+    println!("sheet.vtu (VTK/ParaView: interpolated colormap, quantity dropdown)");
+    println!("sheet_<Layer>.vtu (one file per physical layer)");
     println!("stack.vtu (2.5D field stack: all layers + every via, potential + current density)");
     println!("stack_<Layer>.vtu (per-layer 3D stacks, incl. Terminal contacts)");
 }

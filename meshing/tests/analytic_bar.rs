@@ -108,34 +108,6 @@ fn grid_sizes_round_up_to_cover_the_region() {
 }
 
 #[test]
-fn global_mesh_shares_nodes_between_adjacent_regions() {
-    use openrdson_core::geometry::SolidModel;
-    // Two boxes sharing the x=1 face.
-    let a = extrude_polygon(&bar_footprint(1.0, 1.0), 0.0, 1.0, 1, None, None, None);
-    let b_pts = vec![
-        Point::new(1.0, 0.0),
-        Point::new(2.0, 0.0),
-        Point::new(2.0, 1.0),
-        Point::new(1.0, 1.0),
-    ];
-    let b = extrude_polygon(&b_pts, 0.0, 1.0, 1, None, None, None);
-    let model = SolidModel {
-        regions: vec![a, b],
-        material_names: vec!["A".into()],
-    };
-    let cfg = MeshConfig {
-        lateral_cell: 0.5,
-        z_cell: 0.5,
-    };
-    let (mesh, diags) = openrdson_meshing::mesh_model_global(&model, &cfg);
-    assert!(diags.is_empty());
-    // Global grid: nx=4, ny=2, nz=2 -> (5)(3)(3)=45 shared nodes, not doubled.
-    assert_eq!(mesh.nodes.len(), 45);
-    // 4*2*2 cells * 2 regions-worth of cells = 16 elements.
-    assert_eq!(mesh.elements.len(), 16);
-}
-
-#[test]
 fn layer_refinement_overrides_cell_size() {
     use openrdson_core::geometry::SolidModel;
     use openrdson_meshing::{mesh_model_with_options, MeshOptions};
