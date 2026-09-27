@@ -93,7 +93,9 @@ solver dependency**.
 
 ## Dependencies
 
-- **Rust (2024+)** and a recent Cargo toolchain.
+- **Rust** — the workspace builds on edition 2021 and is exercised in CI on
+  stable (currently 1.97.x). No MSRV is pinned yet, so treat recent stable as the
+  requirement.
 - **faer** — optional, sparse direct solver (`faer-sheet` feature).
 - **ngspice** — optional, an external `ngspice` binary used only for Mode A
   channel co-simulation.
@@ -187,7 +189,8 @@ Please submit more ideas!
 ---
 ## License
 
-Licensed under MIT license.
+Licensed under either of [Apache License, Version 2.0](LICENSE-APACHE) or
+[MIT license](LICENSE-MIT) at your option.
 
 ## Repository layout
 

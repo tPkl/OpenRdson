@@ -1,0 +1,83 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+# The CI token never needs write access; the workflow only reads the repo.
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  # Default feature set: the full gate. Formatting and clippy are advisory so
+  # the pre-existing lint debt does not block merges -- their logs stay visible
+  # for cleanup. Only build, test, and the smoke test gate the job.
+  ci:
+    name: build + test (default features)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust (stable)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Check formatting (advisory)
+        continue-on-error: true
+        run: cargo fmt --all --check
+
+      - name: Clippy (advisory)
+        continue-on-error: true
+        run: cargo clippy --workspace --all-targets
+
+      - name: Build
+        run: cargo build --release --locked
+
+      - name: Test
+        run: cargo test --workspace --locked
+
+      - name: CLI smoke test
+        run: |
+          ./target/release/openrdson --help
+          ./target/release/openrdson --print-default-config > "$RUNNER_TEMP/openrdson.yaml"
+          test -s "$RUNNER_TEMP/openrdson.yaml"
+
+  # `faer-sheet` swaps the 2D sheet solves over to faer's sparse Cholesky. That
+  # is a different solver backend from the default in-tree IC(0)-PCG, so it gets
+  # its own compile and test coverage rather than being folded into the gate
+  # above. The two jobs run in parallel and each compiles independently; a
+  # shared target dir would need artifact upload/download, which is not worth it
+  # for a feature this small.
+  faer-sheet-build:
+    name: build (faer-sheet)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust (stable)
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Build
+        run: cargo build --features faer-sheet --locked
+
+  faer-sheet-test:
+    name: test (faer-sheet)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust (stable)
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Test
+        run: cargo test --workspace --features faer-sheet --locked
