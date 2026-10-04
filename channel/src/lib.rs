@@ -3,6 +3,8 @@
 //! Bias-dependent channel/drift resistance from the channel-model
 //! `Id(T, Vgs, Vds)` lookup table.
 
+use openrdson_core::diag::Diag;
+
 /// A regular `Id(T, Vgs, Vds)` lookup table parsed from the model table.
 #[derive(Debug, Clone)]
 pub struct ModelTable {
@@ -20,25 +22,47 @@ pub struct ModelTable {
 }
 
 impl ModelTable {
-    pub fn from_csv(text: &str) -> Result<Self, String> {
+    /// Parse the model table. Returns the table plus diagnostics for malformed
+    /// rows/headers. Errors only when the table has no usable rows at all.
+    pub fn from_csv(text: &str) -> Result<(Self, Vec<Diag>), String> {
         let mut l_ref = None;
         let mut w_ref = None;
         let mut rows: Vec<(f64, f64, f64, f64)> = Vec::new();
         let mut t_axis: Vec<f64> = Vec::new();
         let mut vgs_axis: Vec<f64> = Vec::new();
         let mut vds_axis: Vec<f64> = Vec::new();
+        let mut diags = Vec::new();
 
-        for line in text.lines() {
-            let line = line.trim();
+        for (i, raw) in text.lines().enumerate() {
+            let line_no = i + 1;
+            let line = raw.trim();
             if line.is_empty() {
                 continue;
             }
             if let Some(rest) = line.strip_prefix("L ") {
-                l_ref = rest.trim().parse::<f64>().ok();
+                l_ref = match rest.trim().parse::<f64>() {
+                    Ok(v) => Some(v),
+                    Err(_) => {
+                        diags.push(Diag::at(
+                            line_no,
+                            format!("\"L\" expects a number, got \"{}\"", rest.trim()),
+                        ));
+                        None
+                    }
+                };
                 continue;
             }
             if let Some(rest) = line.strip_prefix("Wfinger ") {
-                w_ref = rest.trim().parse::<f64>().ok();
+                w_ref = match rest.trim().parse::<f64>() {
+                    Ok(v) => Some(v),
+                    Err(_) => {
+                        diags.push(Diag::at(
+                            line_no,
+                            format!("\"Wfinger\" expects a number, got \"{}\"", rest.trim()),
+                        ));
+                        None
+                    }
+                };
                 continue;
             }
             if line.starts_with("Temperature")
@@ -50,10 +74,18 @@ impl ModelTable {
             }
             let parts: Vec<&str> = line.split(',').collect();
             if parts.len() != 4 {
+                diags.push(Diag::at(
+                    line_no,
+                    format!(
+                        "expected 4 comma-separated values (T,Vgs,Vds,Id), got {}: \"{line}\"",
+                        parts.len()
+                    ),
+                ));
                 continue;
             }
             let vals: Vec<f64> = parts.iter().filter_map(|p| p.trim().parse::<f64>().ok()).collect();
             if vals.len() != 4 {
+                diags.push(Diag::at(line_no, format!("non-numeric data row: \"{line}\"")));
                 continue;
             }
             let (t, vgs, vds, id) = (vals[0], vals[1], vals[2], vals[3]);
@@ -82,16 +114,19 @@ impl ModelTable {
             ids[iv * n_t * n_vgs + ig * n_t + it] = Some(id);
         }
 
-        Ok(Self {
-            temperature_axis: t_axis,
-            vgs_axis,
-            vds_axis,
-            l_ref: l_ref.unwrap_or(0.4e-6),
-            w_ref: w_ref.unwrap_or(1e-6),
-            ids,
-            n_t,
-            n_vgs,
-        })
+        Ok((
+            Self {
+                temperature_axis: t_axis,
+                vgs_axis,
+                vds_axis,
+                l_ref: l_ref.unwrap_or(0.4e-6),
+                w_ref: w_ref.unwrap_or(1e-6),
+                ids,
+                n_t,
+                n_vgs,
+            },
+            diags,
+        ))
     }
 
     fn id_at_index(&self, iv: usize, ig: usize, it: usize) -> Option<f64> {
@@ -164,4 +199,70 @@ fn bracket(axis: &[f64], x: f64) -> Option<(usize, usize, f64)> {
         }
     }
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const CSV: &str = "Temperature 25\n\
+        Vgsmax 0\n\
+        L 4.0e-7\n\
+        Wfinger 1.0e-6\n\
+        Model MY_NMOS\n\
+        axis names: temperature,Vgs,Vds,Id\n\
+        27.0,0.0,0.1,0.0\n\
+        27.0,-1.0,0.1,1.0e-3\n\
+        27.0,-2.0,0.1,1.0e-2\n";
+
+    #[test]
+    fn parses_a_clean_table_without_diagnostics() {
+        let (t, diags) = ModelTable::from_csv(CSV).unwrap();
+        assert!(diags.is_empty(), "{diags:?}");
+        assert_eq!(t.l_ref, 4.0e-7);
+        assert_eq!(t.w_ref, 1.0e-6);
+        assert_eq!(t.vgs_axis.len(), 3);
+        // Id is read back through the trilinear lookup.
+        assert_eq!(t.id_at(27.0, -2.0, 0.1), Some(1.0e-2));
+    }
+
+    #[test]
+    fn reports_a_row_with_the_wrong_column_count() {
+        let (_t, diags) =
+            ModelTable::from_csv("27.0,0.0,0.0,0.0\n27.0,0.0,0.0\n").unwrap();
+        assert!(
+            diags
+                .iter()
+                .any(|d| d.message.contains("expected 4 comma-separated values")),
+            "{diags:?}"
+        );
+        assert_eq!(diags[0].line, 2);
+    }
+
+    #[test]
+    fn reports_a_non_numeric_data_row() {
+        let (_t, diags) =
+            ModelTable::from_csv("27.0,0.0,0.0,0.0\n27.0,x,0.0,0.0\n").unwrap();
+        assert!(
+            diags.iter().any(|d| d.message.contains("non-numeric data row")),
+            "{diags:?}"
+        );
+    }
+
+    #[test]
+    fn reports_a_bad_header_value() {
+        let (_t, diags) =
+            ModelTable::from_csv("L notanumber\n27.0,0.0,0.0,0.0\n").unwrap();
+        assert!(
+            diags
+                .iter()
+                .any(|d| d.message.contains("\"L\" expects a number")),
+            "{diags:?}"
+        );
+    }
+
+    #[test]
+    fn errors_when_there_are_no_usable_rows() {
+        assert!(ModelTable::from_csv("Temperature 25\nModel X\n").is_err());
+    }
 }

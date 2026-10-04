@@ -107,3 +107,42 @@ fn via_grouping_combines_parallel_vias() {
         .collect();
     assert_eq!(group_vias(&far, 1.0).len(), 3);
 }
+
+/// M1 -> via -> M2 series path: a full-width via so there is no point-contact
+/// spreading, giving the clean analytic `R = R_M1 + R_via + R_M2`.
+#[test]
+fn m1_via_m2_chain_resistance_matches_analytic() {
+    use openrdson_extraction::{SheetPolygon, SheetVia};
+    let m1 = SheetPolygon {
+        physical: "M1".into(),
+        points: rect(0.0, 0.0, 5.0, 1.0),
+        component: 0,
+        r_sheet: 1.0,
+    };
+    let m2 = SheetPolygon {
+        physical: "M2".into(),
+        points: rect(5.0, 0.0, 10.0, 1.0),
+        component: 0,
+        r_sheet: 1.0,
+    };
+    let via = SheetVia {
+        bottom: "M1".into(),
+        top: "M2".into(),
+        center: Point::new(5.0, 0.5),
+        resistance: 2.0,
+        component: 0,
+        half_width: 0.025,
+        half_height: 0.5,
+    };
+    let net = SheetNetwork::build(&[m1, m2], &[], &[via], &[], 0.05, 8000);
+
+    let left: Vec<u32> = (0..net.node_count() as u32)
+        .filter(|&n| net.x[n as usize].abs() < 1e-9)
+        .collect();
+    let right: Vec<u32> = (0..net.node_count() as u32)
+        .filter(|&n| (net.x[n as usize] - 10.0).abs() < 1e-9)
+        .collect();
+    let r = net.resistance(&left, &right, 1e-10, 20000).unwrap();
+    // 5 (M1) + 2 (via) + 5 (M2) = 12 ohm.
+    assert!((r - 12.0).abs() / 12.0 < 0.05, "via chain R = {r}, expected ~12 ohm");
+}

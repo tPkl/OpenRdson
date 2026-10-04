@@ -1141,9 +1141,21 @@ impl SheetFullArray {
         }
 
         // Channel model is optional: required only when active devices exist.
-        let model = std::fs::read_to_string(&paths.model_csv)
-            .ok()
-            .and_then(|csv| ModelTable::from_csv(&csv).ok());
+        let model = std::fs::read_to_string(&paths.model_csv).ok().and_then(|csv| {
+            if csv.trim().is_empty() {
+                return None;
+            }
+            match ModelTable::from_csv(&csv) {
+                Ok((table, diags)) => {
+                    openrdson_core::diag::log_diags(&paths.model_csv.display().to_string(), &diags);
+                    Some(table)
+                }
+                Err(e) => {
+                    openrdson_core::log_warn!("channel model {}: {e}", paths.model_csv.display());
+                    None
+                }
+            }
+        });
         if model.is_none() && !channels.is_empty() {
             match settings.missing_model {
                 MissingModel::Error => {

@@ -4,6 +4,7 @@
 //! dependency-free and stable.
 
 pub mod device;
+pub mod diag;
 pub mod geometry;
 pub mod geomops;
 pub mod log;

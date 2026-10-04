@@ -11,6 +11,7 @@ pub use connectivity::{
 };
 
 use openrdson_core::device::{DeviceKind, DeviceTemplate, SpiInstance};
+use openrdson_core::diag::Diag;
 use openrdson_core::geometry::Point;
 use openrdson_core::layout::{LayoutIR, LayoutPolygon, Port};
 use openrdson_io::{read_gds_file, read_gds_map_file, ElementKind, GdsLibrary};
@@ -98,20 +99,34 @@ pub fn rescale_layout(layout: &mut openrdson_core::layout::LayoutIR, factor: f64
 }
 
 /// Parse a CCI `*.ports` file. Coordinates are database units and are converted
-/// to meters with `db_unit_meters`.
-pub fn parse_ports(text: &str, db_unit_meters: f64) -> Vec<Port> {
+/// to meters with `db_unit_meters`. Returns the ports plus diagnostics for
+/// malformed lines.
+pub fn parse_ports(text: &str, db_unit_meters: f64) -> (Vec<Port>, Vec<Diag>) {
     let mut ports = Vec::new();
-    for line in text.lines() {
-        let line = line.trim();
+    let mut diags = Vec::new();
+    for (i, raw) in text.lines().enumerate() {
+        let line_no = i + 1;
+        let line = raw.trim();
         if line.is_empty() || line.starts_with('#') {
             continue;
         }
         let t: Vec<&str> = line.split_whitespace().collect();
         // <name> <id> <direction> <x> <y> <net>
         if t.len() < 6 {
+            diags.push(Diag::at(
+                line_no,
+                format!(
+                    "expected 6 fields \"<name> <id> <direction> <x> <y> <net>\", got {}",
+                    t.len()
+                ),
+            ));
             continue;
         }
         let (Ok(x), Ok(y)) = (t[3].parse::<f64>(), t[4].parse::<f64>()) else {
+            diags.push(Diag::at(
+                line_no,
+                format!("non-numeric coordinate (x=\"{}\", y=\"{}\")", t[3], t[4]),
+            ));
             continue;
         };
         // The trailing token is the port's logical layer/net name in this DB.
@@ -125,16 +140,20 @@ pub fn parse_ports(text: &str, db_unit_meters: f64) -> Vec<Port> {
             layer: t[5].to_string(),
         });
     }
-    ports
+    (ports, diags)
 }
 
 pub fn read_ports_file<P: AsRef<Path>>(path: P, db_unit_meters: f64) -> io::Result<Vec<Port>> {
+    let path = path.as_ref();
     let text = std::fs::read_to_string(path)?;
-    Ok(parse_ports(&text, db_unit_meters))
+    let (ports, diags) = parse_ports(&text, db_unit_meters);
+    openrdson_core::diag::log_diags(&path.display().to_string(), &diags);
+    Ok(ports)
 }
 
-/// Parse a CCI `devtab` device table into device *definitions* (templates).
-pub fn parse_devtab(text: &str) -> Vec<DeviceTemplate> {
+/// Parse a CCI `devtab` device table into device *definitions* (templates),
+/// plus diagnostics for entries that could not be parsed.
+pub fn parse_devtab(text: &str) -> (Vec<DeviceTemplate>, Vec<Diag>) {
     let lines: Vec<&str> = text.lines().collect();
     let starts: Vec<usize> = lines
         .iter()
@@ -144,15 +163,20 @@ pub fn parse_devtab(text: &str) -> Vec<DeviceTemplate> {
         .collect();
 
     let mut templates = Vec::new();
+    let mut diags = Vec::new();
     for (n, &start) in starts.iter().enumerate() {
         let end = starts.get(n + 1).copied().unwrap_or(lines.len());
         // Skip the "Device Entry N" line and the following timestamp line.
         let body = &lines[(start + 2).min(end)..end];
-        if let Some(t) = parse_device_entry(body) {
-            templates.push(t);
+        match parse_device_entry(body) {
+            Some(t) => templates.push(t),
+            None => diags.push(Diag::at(
+                start + 1,
+                "malformed 'Device Entry' block (missing name/kind/model or terminal/property/param counts)",
+            )),
         }
     }
-    templates
+    (templates, diags)
 }
 
 fn parse_device_entry(lines: &[&str]) -> Option<DeviceTemplate> {
@@ -203,8 +227,11 @@ fn parse_device_entry(lines: &[&str]) -> Option<DeviceTemplate> {
 }
 
 pub fn read_devtab_file<P: AsRef<Path>>(path: P) -> io::Result<Vec<DeviceTemplate>> {
+    let path = path.as_ref();
     let text = std::fs::read_to_string(path)?;
-    Ok(parse_devtab(&text))
+    let (templates, diags) = parse_devtab(&text);
+    openrdson_core::diag::log_diags(&path.display().to_string(), &diags);
+    Ok(templates)
 }
 
 /// Parse instance lines from a CCI/LVS SPICE netlist (`*.spi`).
@@ -213,15 +240,24 @@ pub fn read_devtab_file<P: AsRef<Path>>(path: P) -> io::Result<Vec<DeviceTemplat
 /// ```text
 /// XX0 1 3 2 1 device_model w=1e-05 weff=0.001 nf=100 nx=10 ny=10 m=1 mlay=1 avnx=10 $X=23680 $Y=10280 $D=202
 /// ```
-pub fn parse_spi_instances(text: &str) -> Vec<SpiInstance> {
+///
+/// Returns the instances plus diagnostics for instance lines that could not be
+/// resolved (e.g. no model name found).
+pub fn parse_spi_instances(text: &str) -> (Vec<SpiInstance>, Vec<Diag>) {
     let mut out = Vec::new();
-    for line in text.lines() {
-        let line = line.trim();
+    let mut diags = Vec::new();
+    for (i, raw) in text.lines().enumerate() {
+        let line_no = i + 1;
+        let line = raw.trim();
         if !line.starts_with('X') || line.starts_with("XX_") {
             continue;
         }
         let t: Vec<&str> = line.split_whitespace().collect();
         if t.len() < 3 {
+            diags.push(Diag::at(
+                line_no,
+                format!("instance line has too few fields: \"{line}\""),
+            ));
             continue;
         }
         // Find the model: first token after the name that is not a node/number.
@@ -235,7 +271,13 @@ pub fn parse_spi_instances(text: &str) -> Vec<SpiInstance> {
                 break;
             }
         }
-        let Some(mi) = model_idx else { continue };
+        let Some(mi) = model_idx else {
+            diags.push(Diag::at(
+                line_no,
+                format!("could not find a device model on instance line: \"{line}\""),
+            ));
+            continue;
+        };
         let nodes = t[1..mi].iter().map(|s| s.to_string()).collect();
         let model = t[mi].to_string();
         let mut params = std::collections::BTreeMap::new();
@@ -265,19 +307,25 @@ pub fn parse_spi_instances(text: &str) -> Vec<SpiInstance> {
             y,
         });
     }
-    out
+    (out, diags)
 }
 
 pub fn read_spi_instances<P: AsRef<Path>>(path: P) -> io::Result<Vec<SpiInstance>> {
+    let path = path.as_ref();
     let text = std::fs::read_to_string(path)?;
-    Ok(parse_spi_instances(&text))
+    let (instances, diags) = parse_spi_instances(&text);
+    openrdson_core::diag::log_diags(&path.display().to_string(), &diags);
+    Ok(instances)
 }
 
-/// Parse a CCI `*.lnn` layout net-name table (`<node id> <net name>`).
-pub fn parse_net_names(text: &str) -> std::collections::BTreeMap<i64, String> {
+/// Parse a CCI `*.lnn` layout net-name table (`<node id> <net name>`), plus
+/// diagnostics for lines whose leading id is not a number.
+pub fn parse_net_names(text: &str) -> (std::collections::BTreeMap<i64, String>, Vec<Diag>) {
     let mut out = std::collections::BTreeMap::new();
-    for line in text.lines() {
-        let line = line.trim();
+    let mut diags = Vec::new();
+    for (i, raw) in text.lines().enumerate() {
+        let line_no = i + 1;
+        let line = raw.trim();
         if line.is_empty()
             || line.starts_with('#')
             || line.starts_with('%')
@@ -286,19 +334,30 @@ pub fn parse_net_names(text: &str) -> std::collections::BTreeMap<i64, String> {
             continue;
         }
         let t: Vec<&str> = line.split_whitespace().collect();
-        if t.len() >= 2 {
-            if let Ok(id) = t[0].parse::<i64>() {
+        if t.len() < 2 {
+            continue;
+        }
+        match t[0].parse::<i64>() {
+            Ok(id) => {
                 out.insert(id, t[1].to_string());
             }
+            Err(_) => diags.push(Diag::at(
+                line_no,
+                format!("expected \"<node id> <net name>\", got \"{line}\""),
+            )),
         }
     }
-    out
+    (out, diags)
 }
 
 pub fn read_net_names<P: AsRef<Path>>(
     path: P,
 ) -> io::Result<std::collections::BTreeMap<i64, String>> {
-    Ok(parse_net_names(&std::fs::read_to_string(path)?))
+    let path = path.as_ref();
+    let text = std::fs::read_to_string(path)?;
+    let (names, diags) = parse_net_names(&text);
+    openrdson_core::diag::log_diags(&path.display().to_string(), &diags);
+    Ok(names)
 }
 
 /// A device template from the CCI netlist `.DEVTMPLT` dictionary: the model,
@@ -310,18 +369,33 @@ pub struct CciDeviceTemplate {
     pub terminals: Vec<(String, String)>,
 }
 
-/// Parse the `*.DEVTMPLT` lines of a CCI netlist (`*.pin_xy_spi`).
-pub fn parse_device_templates(text: &str) -> std::collections::BTreeMap<i64, CciDeviceTemplate> {
+/// Parse the `*.DEVTMPLT` lines of a CCI netlist (`*.pin_xy_spi`), plus
+/// diagnostics for malformed template lines.
+pub fn parse_device_templates(
+    text: &str,
+) -> (std::collections::BTreeMap<i64, CciDeviceTemplate>, Vec<Diag>) {
     let mut out = std::collections::BTreeMap::new();
-    for line in text.lines() {
-        let Some(rest) = line.trim().strip_prefix("*.DEVTMPLT ") else {
+    let mut diags = Vec::new();
+    for (i, raw) in text.lines().enumerate() {
+        let line_no = i + 1;
+        let Some(rest) = raw.trim().strip_prefix("*.DEVTMPLT ") else {
             continue;
         };
         let t: Vec<&str> = rest.split_whitespace().collect();
         if t.len() < 3 {
+            diags.push(Diag::at(
+                line_no,
+                format!("expected \"*.DEVTMPLT <id> <model> <seed> [term(layer) ...]\", got \"{rest}\""),
+            ));
             continue;
         }
-        let Ok(num) = t[0].parse::<i64>() else { continue };
+        let Ok(num) = t[0].parse::<i64>() else {
+            diags.push(Diag::at(
+                line_no,
+                format!("non-numeric .DEVTMPLT id \"{}\"", t[0]),
+            ));
+            continue;
+        };
         let model = t[1].trim_end_matches("()").to_string();
         let seed = t[2].to_string();
         let terminals = t[3..]
@@ -340,13 +414,17 @@ pub fn parse_device_templates(text: &str) -> std::collections::BTreeMap<i64, Cci
             },
         );
     }
-    out
+    (out, diags)
 }
 
 pub fn read_cci_device_templates<P: AsRef<Path>>(
     path: P,
 ) -> io::Result<std::collections::BTreeMap<i64, CciDeviceTemplate>> {
-    Ok(parse_device_templates(&std::fs::read_to_string(path)?))
+    let path = path.as_ref();
+    let text = std::fs::read_to_string(path)?;
+    let (templates, diags) = parse_device_templates(&text);
+    openrdson_core::diag::log_diags(&path.display().to_string(), &diags);
+    Ok(templates)
 }
 
 #[cfg(test)]
@@ -355,20 +433,91 @@ mod tests {
 
     #[test]
     fn parses_lnn_net_names() {
-        let m = parse_net_names("# header\n% cell 0\n1 D\n2 S\n3 G\n");
+        let (m, diags) = parse_net_names("# header\n% cell 0\n1 D\n2 S\n3 G\n");
+        assert!(diags.is_empty(), "{diags:?}");
         assert_eq!(m.get(&1).map(String::as_str), Some("D"));
         assert_eq!(m.get(&3).map(String::as_str), Some("G"));
     }
 
     #[test]
+    fn flags_a_lnn_line_without_a_numeric_id() {
+        let (_m, diags) = parse_net_names("1 D\nnotanid S\n");
+        assert!(
+            diags
+                .iter()
+                .any(|d| d.message.contains("expected \"<node id> <net name>\"")),
+            "{diags:?}"
+        );
+        assert_eq!(diags[0].line, 2);
+    }
+
+    #[test]
     fn parses_devtmplt_terminal_order() {
         let text = "*.DEVTMPLT 202 model_a() seed_a net_d(d) net_g(g) net_s(s) net_sub(sub)\n";
-        let m = parse_device_templates(text);
+        let (m, diags) = parse_device_templates(text);
+        assert!(diags.is_empty(), "{diags:?}");
         let t = m.get(&202).unwrap();
         assert_eq!(t.model, "model_a");
         assert_eq!(t.seed, "seed_a");
         assert_eq!(t.terminals[0], ("d".to_string(), "net_d".to_string()));
         assert_eq!(t.terminals[1].0, "g");
         assert_eq!(t.terminals[2], ("s".to_string(), "net_s".to_string()));
+    }
+
+    #[test]
+    fn parses_ports_and_scales_to_meters() {
+        // <name> <id> <direction> <x> <y> <net>
+        let (ports, diags) = parse_ports("D 1 inout 1000 2000 net_M1\nS 2 inout 0 2000 net_M2\n", 1e-9);
+        assert!(diags.is_empty(), "{diags:?}");
+        assert_eq!(ports.len(), 2);
+        assert_eq!(ports[0].name, "D");
+        assert_eq!(ports[0].x, 1000.0 * 1e-9);
+        assert_eq!(ports[0].net, "net_M1");
+        assert_eq!(ports[1].y, 2000.0 * 1e-9);
+    }
+
+    #[test]
+    fn flags_ports_with_too_few_fields_and_bad_coordinates() {
+        let (_p, diags) = parse_ports("D 1 inout 1000\n", 1e-9);
+        assert!(
+            diags.iter().any(|d| d.message.contains("expected 6 fields")),
+            "{diags:?}"
+        );
+        let (_p, diags) = parse_ports("D 1 inout abc 2000 net_M1\n", 1e-9);
+        assert!(
+            diags
+                .iter()
+                .any(|d| d.message.contains("non-numeric coordinate")),
+            "{diags:?}"
+        );
+    }
+
+    #[test]
+    fn flags_a_malformed_devtab_entry() {
+        // A "Device Entry" block whose body is missing the required fields.
+        let (_t, diags) = parse_devtab("Device Entry 1\nAug 12 2026\n\n");
+        assert!(
+            diags.iter().any(|d| d.message.contains("malformed 'Device Entry'")),
+            "{diags:?}"
+        );
+    }
+
+    #[test]
+    fn parses_a_spi_instance_and_flags_a_modelless_line() {
+        let (inst, diags) = parse_spi_instances(
+            "X0 1 3 2 dev w=1e-6 nf=10 $X=100 $Y=200\nX1 1 3 2\n",
+        );
+        assert_eq!(inst.len(), 1);
+        assert_eq!(inst[0].name, "X0");
+        assert_eq!(inst[0].model, "dev");
+        assert_eq!(inst[0].params.get("nf").copied(), Some(10.0));
+        assert_eq!(inst[0].x, Some(100.0));
+        assert!(
+            diags
+                .iter()
+                .any(|d| d.message.contains("could not find a device model")),
+            "{diags:?}"
+        );
+        assert_eq!(diags[0].line, 2);
     }
 }

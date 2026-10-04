@@ -20,3 +20,6 @@ openrdson-channel = { path = "../channel" }
 
 [features]
 faer-sheet = ["openrdson-extraction/faer-sheet"]
+
+[dev-dependencies]
+openrdson-io = { path = "../openrdson-io" }
